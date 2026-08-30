@@ -375,7 +375,9 @@ dsh plugin --profile <name> add <本仓库路径或包名>
 
 ## 11. 待确认问题
 
-1. **“命令”的界定**：本计划按 shell 命令（bash/pwsh 的 `command` 参数）理解；若指的是斜杠命令（slash command），请指出——但斜杠命令由人类直接发起、无审批流程，自动允许/拒绝在其上没有对应语义。
-2. **沙箱外文件是否需要 bash 侧**：v1 只覆盖文件系统工具；若必须覆盖 bash 写文件，需要自定义 `ctx.sandbox` 提供者（工作量显著，见第 10 节）。
-3. **`allowApprovals` 是否允许覆盖升级 ask**：默认不允许（安全默认）；确认是否需要细分配置。
-4. 目标 profile：web / headless 都支持；确认实际部署用哪个。
+> 以下问题已随实现（README.md 记录为准）按计划默认值落定：命令 = shell 命令（bash/pwsh 的 `command` 参数）；v1 沙箱外文件仅覆盖文件系统工具；`allowApprovals` 默认关闭、语义含升级 ask。
+
+1. **“命令”的界定**：按 shell 命令（bash/pwsh 的 `command` 参数）实现；斜杠命令无审批流程，不在范围。
+2. **沙箱外文件是否需要 bash 侧**：v1 只覆盖文件系统工具；进程沙箱扩展需要自定义 `ctx.sandbox` 提供者，保持为非 v1 候选。
+3. **`allowApprovals` 是否允许覆盖升级 ask**：实现为覆盖（含升级 ask），默认空数组、README 显著提示。
+4. 目标 profile：web / headless 等 base-backed profile 均支持（经 `dsh plugin add` 安装）。

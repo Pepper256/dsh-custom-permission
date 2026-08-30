@@ -1,0 +1,70 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "tsBuildInfoFile": ".tsbuildinfo/build.tsbuildinfo"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../vendor/cordis"
+    },
+    {
+      "path": "../vendor/cosmokit"
+    },
+    {
+      "path": "../vendor/schemastery"
+    },
+    {
+      "path": "../vendor/loader"
+    },
+    {
+      "path": "../vendor/include"
+    },
+    {
+      "path": "../packages/fs/fs"
+    },
+    {
+      "path": "../packages/fs/fs-local"
+    },
+    {
+      "path": "../packages/sandbox/sandbox"
+    },
+    {
+      "path": "../packages/sandbox/sandbox-policy"
+    },
+    {
+      "path": "../packages/core/tools"
+    },
+    {
+      "path": "../packages/interaction/user-approval"
+    },
+    {
+      "path": "../packages/core/system-prompt"
+    },
+    {
+      "path": "../packages/interaction/commands"
+    },
+    {
+      "path": "../packages/core/session"
+    },
+    {
+      "path": "../packages/llm/llm"
+    },
+    {
+      "path": "../packages/core/agent"
+    },
+    {
+      "path": "../packages/core/scope"
+    },
+    {
+      "path": "../packages/util/brand"
+    },
+    {
+      "path": "../packages/runtime-diagnostics/invariants"
+    }
+  ]
+}

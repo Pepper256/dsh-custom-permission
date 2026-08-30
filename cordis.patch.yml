@@ -1,0 +1,16 @@
+# dsh-custom-permission bundle patch: applied as a bundle layer AFTER the
+# dsh-base bundle. It replaces the sandboxed filesystem backend with this
+# plugin (which provides ctx.fs with configurable extra writable roots) and
+# mounts the permission policy. Rows stay patchable by the user's profile
+# cordis.patch.yml, whose last write wins per row.
+#
+# A composition that never mounted dsh-base's fs-sandbox row only sees the
+# disabled-target warning; the inserted row still applies.
+
+- id: fs-sandbox
+  name: '@deepseek-ai/dsh-fs-sandbox'
+  disabled: true
+
+- insert:
+    - id: custom-permission
+      name: 'dsh-custom-permission'

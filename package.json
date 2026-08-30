@@ -1,0 +1,32 @@
+{
+  "name": "dsh-custom-permission",
+  "description": "Out-of-tree DeepSeek Harness plugin: user-configurable auto-allow / auto-deny rules for tools and shell commands, plus extra writable roots outside the workspace sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/types/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/types/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/types/**/*.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc --build tsconfig.build.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "license": "MIT"
+}
