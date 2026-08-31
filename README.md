@@ -75,6 +75,72 @@ dsh plugin --profile <name> add <本仓库路径>
 - **模型可见上下文**：配置了额外根时，`custom-permission:extra-roots` 运行时上下文（与 `sandbox:policy` 同一机制）让模型知道这些路径可写；未配置时贡献空文本。
 - **`/custom-permission` 命令**：在具备命令注册表的组合（如 web profile）中注册，只读展示当前生效的规则与额外根。
 
+## 手动测试
+
+本仓库的开发机在 DSH 安装闭包之外，先把运行时依赖桥接进来（`@deepseek-ai/*` 裸导入按全局 dsh 安装的包解析；脚本自动定位全局安装，也可用 `DSH_CLOSURE` 覆盖）：
+
+```sh
+node scripts/link-closure-deps.mjs     # 幂等，可重复执行
+pnpm exec tsc --build tsconfig.build.json    # 修改源码后重建 lib/
+```
+
+### 1. 创建独立测试 profile（不动线上 web profile）
+
+```sh
+dsh plugin --profile permtest add E:\deepseek-harness\dsh-custom-permission
+```
+
+该命令会新建 `$DSH_HOME/profiles/permtest`，bundles 自动带上 `@deepseek-ai/dsh-base` 与 `dsh-custom-permission`。要用 GUI 交互测试，再手动把 web-app 加进 bundles（编辑 `profiles/permtest/package.json`）：
+
+```json
+"dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-custom-permission"] } }
+```
+
+### 2. 写测试配置（`profiles/permtest/cordis.patch.yml`，live 热重载）
+
+Windows 上的 shell 工具是 `pwsh`（bash 仅在非 Windows）。示例：
+
+```yaml
+- id: custom-permission
+  config:
+    allowRules:
+      - tool: 'pwsh'
+        when:
+          command: { prefix: 'git status' }
+    denyRules:
+      - tool: 'pwsh'
+        when:
+          command: { contains: 'DANGER_MARKER' }
+    allowApprovals:
+      - 'pwsh'
+    extraWritableRoots:
+      - 'C:\Users\31332\Documents\dsh-extra-test'
+```
+
+### 3. 启动并验证
+
+```sh
+# 组合验证（无需启动应用）：fs-sandbox 应显示 disabled: true，并出现 custom-permission 行
+dsh --profile permtest --dump-config | Select-String -Pattern 'custom-permission|fs-sandbox' -Context 0,3
+
+# 启动 GUI（--port 0 让系统分配空闲端口，避免和线上 web 冲突）
+dsh --profile permtest --port 0 --no-open
+```
+
+### 4. 交互用例（在 permtest 的 GUI 会话里）
+
+1. **自动拒绝命令**：让模型运行 `pwsh` 且命令里带 `DANGER_MARKER`（如 `echo DANGER_MARKER`）→ 工具结果应为 `Error: blocked by dsh-custom-permission rule #1 (tool "pwsh")`，且没有审批卡片。
+2. **自动允许（审批路径）**：在 `/permission` 里把会话沙箱切到 `read-only`，让模型在 `extraWritableRoots` 之外建文件 → 它会收到沙箱拒绝并升级（`sandbox_permissions` + justification）→ 因 `allowApprovals: ['pwsh']`（或命令级 allow 规则命中），升级 ask 被自动放行、不再弹卡片。
+3. **沙箱外文件**：让模型直接写 `extraWritableRoots` 下的文件（如 `C:\...\dsh-extra-test\a.txt`）→ 直接成功；模型上下文里会出现 `also writable` 的额外路径说明。对比：不配置额外根时，同样的写会被 `[sandbox: file access denied under workspace-write mode]` 拒绝。
+4. **`/custom-permission`**：在输入框键入该命令，展示当前生效的规则与额外根。
+5. 改 `cordis.patch.yml` 里的规则后无需重启（live 热重载）。
+
+### 5. 回滚
+
+```sh
+dsh plugin --profile permtest remove dsh-custom-permission   # 从 bundles/依赖移除；删除整个测试 profile 目录亦可
+```
+
 ## 开发
 
 本仓库是独立 git 仓库，不在 DSH 的 pnpm workspace 内；开发/测试复用 DSH checkout 的工具链与源码映射（`tsconfig.base.json` 的 paths + project references）：
@@ -88,7 +154,7 @@ pnpm exec vitest run --config dsh-custom-permission/vitest.config.ts   # 运行�
 
 测试覆盖：规则引擎单测（`tests/rules.spec.ts`）、后端栅栏测试（`tests/fs-backend.spec.ts`）、经 Loader 启动真实 cordis.yml 的组合测试（`tests/policy.real.spec.ts`，断言模型可见/持久化行为）。
 
-运行时依赖（`@deepseek-ai/*`）由 DSH 安装的模块 fallback 解析，本插件 `package.json` 不声明对它们的依赖。
+运行时依赖（`@deepseek-ai/*`）在真实部署中按 DSH 安装闭包解析：插件目录位于安装闭包内（如直接装入全局 dsh）时天然可解析；位于闭包外时先运行 `node scripts/link-closure-deps.mjs` 桥接（见"手动测试"）。本插件 `package.json` 不声明对它们的依赖。
 
 ## 限制
 
