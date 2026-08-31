@@ -123,8 +123,9 @@ Windows 上的 shell 工具是 `pwsh`（bash 仅在非 Windows）。示例：
 # 组合验证（无需启动应用）：fs-sandbox 应显示 disabled: true，并出现 custom-permission 行
 dsh --profile permtest --dump-config | Select-String -Pattern 'custom-permission|fs-sandbox' -Context 0,3
 
-# 启动 GUI（--port 0 让系统分配空闲端口，避免和线上 web 冲突）
-dsh --profile permtest --port 0 --no-open
+# 一键「重建 lib + 重启 GUI」：改源码后重跑即可（无需重装；DSH_HOME 默认隔离在 %USERPROFILE%\.dsh-dev）
+pwsh -File scripts\dev-loop.ps1          # 等价于下面的手动启动，且会先杀掉旧实例
+dsh --profile permtest --port 0 --no-open   # 或手动启动（--port 0 自动选空闲端口）
 ```
 
 ### 4. 交互用例（在 permtest 的 GUI 会话里）
