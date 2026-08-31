@@ -6,7 +6,7 @@
  * requests — rather than listener internals.
  */
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -22,6 +22,8 @@ import Tools, { defineTool } from '@deepseek-ai/dsh-tools'
 import type { PreToolDecision } from '@deepseek-ai/dsh-tools'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
+import CommandRuntime from '@deepseek-ai/dsh-commands'
+import SettingsFile from '@deepseek-ai/dsh-settings-file'
 import CustomPermissionFileSystem from '../src/index.ts'
 
 let root: string | undefined
@@ -42,10 +44,11 @@ function yamlPath(path: string): string {
 /** Boot the test composition through the Loader; the extra root is this base's own `extra` dir. */
 async function compose(
   approvalPolicy: 'ask' | 'never',
-): Promise<{ ctx: Context; workspace: string; extra: string }> {
+): Promise<{ ctx: Context; workspace: string; extra: string; settingsPath: string }> {
   root = await mkdtemp(join(tmpdir(), 'dsh-custom-permission-loader-'))
   const workspace = join(root, 'ws')
   const extra = join(root, 'extra')
+  const settingsPath = join(root, 'settings.yaml')
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
     "- name: '@deepseek-ai/dsh-sandbox-policy'",
@@ -57,23 +60,33 @@ async function compose(
     "- name: '@deepseek-ai/dsh-user-approval'",
     '  config:',
     `    policy: ${approvalPolicy}`,
+    "- name: '@deepseek-ai/dsh-commands'",
+    "- name: '@deepseek-ai/dsh-settings-file'",
+    '  config:',
+    `    path: '${yamlPath(settingsPath)}'`,
     "- name: 'dsh-custom-permission'",
     '  config:',
-    '    allowRules:',
-    "      - tool: 'bash'",
-    '        when:',
-    '          command:',
-    "            regex: '^git '",
-    '    denyRules:',
-    "      - tool: 'bash'",
-    '        when:',
-    '          command:',
-    "            regex: 'rm -rf /'",
-    "      - tool: 'echo'",
-    "        reason: 'echo is disabled here'",
-    "    allowApprovals: ['fetch']",
-    '    extraWritableRoots:',
-    `      - '${yamlPath(extra)}'`,
+    '    presets:',
+    '      default:',
+    '        allowRules:',
+    "          - tool: 'bash'",
+    '            when:',
+    '              command:',
+    "                regex: '^git '",
+    '        denyRules:',
+    "          - tool: 'bash'",
+    '            when:',
+    '              command:',
+    "                regex: 'rm -rf /'",
+    "          - tool: 'echo'",
+    "            reason: 'echo is disabled here'",
+    "        allowApprovals: ['fetch']",
+    '        extraWritableRoots:',
+    `          - '${yamlPath(extra)}'`,
+    '      work:',
+    '        denyRules:',
+    "          - tool: 'echo'",
+    "            reason: 'echo disabled in work preset'",
     '',
   ].join('\n'))
 
@@ -89,6 +102,8 @@ async function compose(
         case '@deepseek-ai/dsh-system-prompt': return SystemPrompt
         case '@deepseek-ai/dsh-tools': return Tools
         case '@deepseek-ai/dsh-user-approval': return ApprovalService
+        case '@deepseek-ai/dsh-commands': return CommandRuntime
+        case '@deepseek-ai/dsh-settings-file': return SettingsFile
         case 'dsh-custom-permission': return CustomPermissionFileSystem
         default: throw new Error(`unexpected Loader import: ${specifier}`)
       }
@@ -100,7 +115,7 @@ async function compose(
   })
   await context.loader.await()
 
-  return { ctx: context, workspace, extra }
+  return { ctx: context, workspace, extra, settingsPath }
 }
 
 /** A minimal Agent stand-in with a seeded open turn and optional tool/call events. */
@@ -277,5 +292,46 @@ describe('dsh-custom-permission real Loader composition', () => {
 
     const workspaceTarget = await ctx.fs.resolve(join(workspace, 'in.txt'))
     await expect(ctx.fs.writeText(workspaceTarget, 'ws')).resolves.toBeDefined()
+  })
+
+  it('switches presets through the command, applies them to the next call, and persists the selection', async () => {
+    const { ctx, settingsPath } = await compose('ask')
+    ctx.tools.register(echoTool)
+
+    // The default preset denies echo with its own reason.
+    const before = await ctx.tools.execute({
+      signal: testSignal(), callId: ToolCallId('before-switch'), name: 'echo', arguments: {},
+    })
+    expect(before.content[0]).toMatchObject({ text: 'Error: echo is disabled here' })
+
+    // The command lists both presets, then switches to `work` synchronously.
+    const { agent } = fakeAgent([{ type: 'turn/start' }])
+    const listed = await ctx.commands.execute(agent, '/custom-permission presets', [], new AbortController().signal)
+    expect(listed?.result).toMatchObject({ kind: 'success' })
+    expect(listed?.result.text).toContain('default')
+    expect(listed?.result.text).toContain('work')
+
+    const switched = await ctx.commands.execute(agent, '/custom-permission preset work', [], new AbortController().signal)
+    expect(switched?.result).toMatchObject({ kind: 'success' })
+    expect(switched?.result.text).toContain('switched to preset "work"')
+
+    // The next call is judged against the new preset's rules.
+    const after = await ctx.tools.execute({
+      signal: testSignal(), callId: ToolCallId('after-switch'), name: 'echo', arguments: {},
+    })
+    expect(after.content[0]).toMatchObject({ text: 'Error: echo disabled in work preset' })
+
+    // The selection persists to the settings document (poll for the async write).
+    let document = ''
+    for (let attempt = 0; attempt < 40 && !document.includes('preset: work'); attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      document = await readFile(settingsPath, 'utf8').catch(() => '')
+    }
+    expect(document).toContain('preset: work')
+
+    // An unknown preset is an error, not a fallback.
+    const unknown = await ctx.commands.execute(agent, '/custom-permission preset nope', [], new AbortController().signal)
+    expect(unknown?.result).toMatchObject({ kind: 'error' })
+    expect(unknown?.result.text).toContain('unknown preset "nope"')
   })
 })

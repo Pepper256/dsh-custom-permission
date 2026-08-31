@@ -21,30 +21,43 @@ dsh plugin --profile <name> add <本仓库路径>
 
 如果不用 bundle 而是手动组合：必须自行禁用 `dsh-fs-sandbox`，否则两个 `ctx.fs` 提供者会让启动 fail loud。
 
-然后在 profile 的 `cordis.patch.yml`（home 级覆盖 profile 级）里写配置：
+然后在 profile 的 `cordis.patch.yml`（home 级覆盖 profile 级）里写配置。配置是一张**命名预设表**，`default` 预设必填（四个字段都可以为空）：
 
 ```yaml
 - id: custom-permission
   config:
-    allowRules:
-      - tool: 'bash'
-        when:
-          command: { regex: '^git (status|diff|log|push)' }
-    denyRules:
-      - tool: 'bash'
-        when:
-          command: { regex: 'rm -rf /' }
-      - tool: 'web_fetch'
-        reason: 'web_fetch is disabled in this deployment'
-    allowApprovals: []
-    extraWritableRoots:
-      - 'E:\\data\\out'
-      - 'C:\\Users\\me\\Documents'
+    presets:
+      default:                     # 必填，缺失即加载失败
+        allowRules:
+          - tool: 'bash'
+            when:
+              command: { regex: '^git (status|diff|log|push)' }
+        denyRules:
+          - tool: 'bash'
+            when:
+              command: { regex: 'rm -rf /' }
+        allowApprovals: []
+        extraWritableRoots:
+          - 'E:\data\out'
+      locked:                      # 其他预设：出错即抛错，绝不回退 default
+        denyRules:
+          - tool: 'bash'
+          - tool: 'write'
+        allowApprovals: []
+        extraWritableRoots: []
 ```
 
-`patchReload: live` 的 profile（默认的 web 等）下，改 patch 文件会热重载插件，规则随重载生效。
+`patchReload: live` 的 profile（默认的 web 等）下，改 patch 文件会热重载插件，预设表随重载生效。
 
-## 配置
+## 预设切换
+
+- 进程级切换：`/custom-permission preset <name>` 立即切换当前预设（下一条工具调用即按新预设判定）；`/custom-permission presets` 列出预设与当前激活项；裸 `/custom-permission` 显示当前预设的完整规则。
+- 切换选择持久化到 `settings.yaml` 的 `custom-permission` 命名空间（热重载）：重启后保持上次选择；存储了未知预设名会使插件加载失败（fail loud，不静默回退）。
+- 任何预设（含 `default`）校验/编译失败都抛错：加载时任一坏预设使插件加载失败并指名预设；切换目标不存在时报错、当前预设不变。
+
+## 配置字段
+
+每个预设包含四个字段（均默认 `[]`，可为空）：
 
 | 字段 | 默认 | 含义 |
 |---|---|---|
@@ -52,7 +65,8 @@ dsh plugin --profile <name> add <本仓库路径>
 | `denyRules` | `[]` | 自动拒绝规则；命中即失败，且在审批之后由单调守卫兜底，任何路径都绕不过 |
 | `allowApprovals` | `[]` | 工具级自动放行名单：该工具的所有审批请求（**包括沙箱升级** `sandbox_permissions`）都自动 `allowed-once`。默认关闭 |
 | `extraWritableRoots` | `[]` | 沙箱外额外可写路径（相对路径按后端 `cwd` 解析，加载时规范化为绝对路径） |
-| `cwd` / `diffBasisMaxBytes` | 同 `dsh-fs-local` | 文件系统后端自身的两个配置，语义与 `dsh-fs-sandbox` 一致 |
+
+插件级（预设之外）：`cwd` / `diffBasisMaxBytes` 同 `dsh-fs-local`，语义与 `dsh-fs-sandbox` 一致。
 
 ### 规则匹配
 
@@ -72,8 +86,8 @@ dsh plugin --profile <name> add <本仓库路径>
 - **自动拒绝的实现**：同一监听器先查 deny（在弹审批之前短路），另有 `ctx.tools.guard()` 单调守卫在审批之后兜底——即使其他监听器或应答者放行，拒绝仍然生效。
 - **审批策略 `never`**：`dsh-user-approval` 在应答链之前确定性拒绝，本插件无法绕过（也不绕过）；此时 `allowApprovals` 不生效。
 - **沙箱外文件**：本插件替换 `ctx.fs` 后端，栅栏与 `dsh-fs-sandbox` 完全一致，唯一差异是 `workspace-write` 下放行集合 = 共享 `writableRoots(policy)`（会话工作区 + 平台临时目录）∪ `extraWritableRoots`。`read-only` 仍全拒、`danger-full-access` 仍不设防。拒绝渲染为熟悉的 `[sandbox: file access denied under <mode> mode]` 标记。
-- **模型可见上下文**：配置了额外根时，`custom-permission:extra-roots` 运行时上下文（与 `sandbox:policy` 同一机制）让模型知道这些路径可写；未配置时贡献空文本。
-- **`/custom-permission` 命令**：在具备命令注册表的组合（如 web profile）中注册，只读展示当前生效的规则与额外根。
+- **模型可见上下文**：配置了额外根时，`custom-permission:extra-roots` 运行时上下文（与 `sandbox:policy` 同一机制）让模型知道这些路径可写；未配置时贡献空文本。切换预设后下一条模型请求即看到新预设的额外路径。
+- **`/custom-permission` 命令**：在具备命令注册表的组合（如 web profile）中注册——裸调用显示当前预设的规则与额外根，`presets` 列出全部预设，`preset <name>` 切换（进程级、持久化）。
 
 ## 手动测试
 
@@ -98,23 +112,31 @@ dsh plugin --profile permtest add E:\deepseek-harness\dsh-custom-permission
 
 ### 2. 写测试配置（`profiles/permtest/cordis.patch.yml`，live 热重载）
 
-Windows 上的 shell 工具是 `pwsh`（bash 仅在非 Windows）。示例：
+Windows 上的 shell 工具是 `pwsh`（bash 仅在非 Windows）。示例（`default` 必填；`locked` 演示切换）：
 
 ```yaml
 - id: custom-permission
   config:
-    allowRules:
-      - tool: 'pwsh'
-        when:
-          command: { prefix: 'git status' }
-    denyRules:
-      - tool: 'pwsh'
-        when:
-          command: { contains: 'DANGER_MARKER' }
-    allowApprovals:
-      - 'pwsh'
-    extraWritableRoots:
-      - 'C:\Users\31332\Documents\dsh-extra-test'
+    presets:
+      default:
+        allowRules:
+          - tool: 'pwsh'
+            when:
+              command: { prefix: 'git status' }
+        denyRules:
+          - tool: 'pwsh'
+            when:
+              command: { contains: 'DANGER_MARKER' }
+        allowApprovals:
+          - 'write'
+        extraWritableRoots:
+          - 'C:\Users\31332\Documents\dsh-extra-test'
+      locked:
+        denyRules:
+          - tool: 'pwsh'
+          - tool: 'write'
+        allowApprovals: []
+        extraWritableRoots: []
 ```
 
 ### 3. 启动并验证
@@ -131,10 +153,11 @@ dsh --profile permtest --port 0 --no-open   # 或手动启动（--port 0 自动�
 ### 4. 交互用例（在 permtest 的 GUI 会话里）
 
 1. **自动拒绝命令**：让模型运行 `pwsh` 且命令里带 `DANGER_MARKER`（如 `echo DANGER_MARKER`）→ 工具结果应为 `Error: blocked by dsh-custom-permission rule #1 (tool "pwsh")`，且没有审批卡片。
-2. **自动允许（审批路径）**：在 `/permission` 里把会话沙箱切到 `read-only`，让模型在 `extraWritableRoots` 之外建文件 → 它会收到沙箱拒绝并升级（`sandbox_permissions` + justification）→ 因 `allowApprovals: ['pwsh']`（或命令级 allow 规则命中），升级 ask 被自动放行、不再弹卡片。
+2. **自动允许（审批路径）**：在 `/permission` 里把会话沙箱切到 `read-only`，让模型在 `extraWritableRoots` 之外建文件 → 它会收到沙箱拒绝并升级（`sandbox_permissions` + justification）→ 因 `allowApprovals: ['write']`（或命令级 allow 规则命中），升级 ask 被自动放行、不再弹卡片。
 3. **沙箱外文件**：让模型直接写 `extraWritableRoots` 下的文件（如 `C:\...\dsh-extra-test\a.txt`）→ 直接成功；模型上下文里会出现 `also writable` 的额外路径说明。对比：不配置额外根时，同样的写会被 `[sandbox: file access denied under workspace-write mode]` 拒绝。
-4. **`/custom-permission`**：在输入框键入该命令，展示当前生效的规则与额外根。
-5. 改 `cordis.patch.yml` 里的规则后无需重启（live 热重载）。
+4. **预设切换**：输入 `/custom-permission presets` 查看预设列表；`/custom-permission preset locked` 切换 → 再让模型写文件，`write` 工具会被拒（locked 预设禁用了它）；`/custom-permission preset default` 切回。切换持久化在 `settings.yaml`，重启后保持。
+5. **`/custom-permission`**：裸调用展示当前预设的完整规则与额外根。
+6. 改 `cordis.patch.yml` 里的预设后无需重启（live 热重载）。
 
 ### 5. 回滚
 
@@ -162,4 +185,5 @@ pnpm exec vitest run --config dsh-custom-permission/vitest.config.ts   # 运行�
 - **bash/pwsh 进程沙箱不可扩展**：额外可写根只作用于文件系统工具；bwrap/Landlock/Seatbelt/Windows ACL 的写集合固定派生自 `writableRoots(policy)`，无外部扩展点。进程沙箱侧需要自定义 `ctx.sandbox` 提供者（逐平台重实现 runner 剖面）。
 - **无 `callId` 的审批请求无法做命令级匹配**：退化为工具级规则（`allowApprovals`）或委托给下家。PTC 模式下子调用落盘为 `tool/code-dispatch` 而非 `tool/call`，同样无法反查。
 - **`allowApprovals` 语义宽**：覆盖该工具的升级 ask（单次授权到 `danger-full-access`），请只在信任工具上开启。
-- **挂载约束**：插件提供 `ctx.fs`，依赖 `ctx.sandboxPolicy`（与 `dsh-fs-sandbox` 相同），守卫注册依赖 `ctx.tools`，上下文贡献依赖 `ctx.systemPrompt`；base-backed profile 均具备。配置为进程级（随插件生命周期固定，live profile 通过改 patch 文件热重载）。
+- **挂载约束**：插件提供 `ctx.fs`，依赖 `ctx.sandboxPolicy`（与 `dsh-fs-sandbox` 相同），守卫注册依赖 `ctx.tools`，上下文贡献依赖 `ctx.systemPrompt`；base-backed profile 均具备。
+- **切换是进程级**：`/custom-permission preset <name>` 切的是整个进程（所有会话），不做按会话粒度；会话事件持久化对外部插件不可用（DSH 的已知事件类型白名单），因此选择持久化在 settings 文档而非会话日志。切换的额外根上下文随下一条模型请求生效；正在执行中的调用按切换前规则完成。

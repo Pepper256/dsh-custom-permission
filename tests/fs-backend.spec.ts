@@ -34,7 +34,10 @@ async function boot(extraRoots: string[] = [extra]): Promise<void> {
   await ctx.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: workspace })
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(Tools)
-  fiber = await ctx.plugin(CustomPermissionFileSystem, { cwd: workspace, extraWritableRoots: extraRoots })
+  fiber = await ctx.plugin(CustomPermissionFileSystem, {
+    cwd: workspace,
+    presets: { default: { extraWritableRoots: extraRoots } },
+  })
   fs = ctx.fs as CustomPermissionFileSystem
 }
 
@@ -149,20 +152,35 @@ describe('config validation', () => {
     await failing.plugin(Tools)
     await expect(failing.plugin(CustomPermissionFileSystem, {
       cwd: workspace,
-      extraWritableRoots: 'not-an-array',
+      presets: { default: { extraWritableRoots: 'not-an-array' } },
     } as never)).rejects.toThrow()
     await failing.fiber.dispose()
   })
 
-  it('rejects an invalid rule regex at load', async () => {
+  it('rejects a config without the required default preset', async () => {
     const failing = new Context()
     await failing.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: workspace })
     await failing.plugin(SystemPrompt)
     await failing.plugin(Tools)
     await expect(failing.plugin(CustomPermissionFileSystem, {
       cwd: workspace,
-      denyRules: [{ tool: 'regex:[' }],
-    } as never)).rejects.toThrow()
+      presets: { work: {} },
+    } as never)).rejects.toThrow(/presets\.default is required/)
+    await failing.fiber.dispose()
+  })
+
+  it('rejects an invalid rule regex at load, naming the failing preset', async () => {
+    const failing = new Context()
+    await failing.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: workspace })
+    await failing.plugin(SystemPrompt)
+    await failing.plugin(Tools)
+    await expect(failing.plugin(CustomPermissionFileSystem, {
+      cwd: workspace,
+      presets: {
+        default: {},
+        work: { denyRules: [{ tool: 'regex:[' }] },
+      },
+    } as never)).rejects.toThrow(/preset "work" is invalid/)
     await failing.fiber.dispose()
   })
 })

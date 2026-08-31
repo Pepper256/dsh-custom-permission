@@ -1,7 +1,10 @@
 /**
- * Plugin configuration for dsh-custom-permission: the auto-allow / auto-deny
- * rule tables, the tool-level approval auto-grant list, and the extra
- * writable roots the filesystem fence admits outside the workspace.
+ * Plugin configuration for dsh-custom-permission: the named preset table.
+ * Every preset carries the four permission knobs (allow/deny rules,
+ * tool-level approval auto-grants, extra writable roots), each defaulting to
+ * empty. The `default` preset is required — an absent key fails at load — and
+ * may itself be empty; any preset that fails to compile fails the load,
+ * never falling back to another preset.
  * @module dsh-custom-permission/config
  */
 
@@ -64,22 +67,45 @@ export const RuleSpec = z.object({
   reason: z.string(),
 })
 
-/** The policy half of the plugin config (resolved values after schema defaults). */
-export interface PolicyConfig {
+/** One named permission preset: the four knobs, each defaulting to empty. */
+export interface Preset {
   /** Allow rules; a matching tool call short-circuits to `allow` before hooks. */
-  allowRules: RuleSpec[]
+  allowRules?: RuleSpec[]
   /** Deny rules; a matching tool call is denied before approval and again by the monotonic guard. */
-  denyRules: RuleSpec[]
+  denyRules?: RuleSpec[]
   /** Tool-level auto-grants: every ask for these tools resolves `allowed-once`, including sandbox escalation asks. */
-  allowApprovals: string[]
+  allowApprovals?: string[]
   /** Extra paths the filesystem fence admits for writes under `workspace-write`. */
-  extraWritableRoots: string[]
+  extraWritableRoots?: string[]
 }
 
-/** Schema for the policy fields; the fs backend schema intersects this with the local backend's. */
-export const PolicyConfig = z.object({
+/** Schema for one preset; fields are optional in input and default to empty lists. */
+export const Preset = z.object({
   allowRules: z.array(RuleSpec).default([]),
   denyRules: z.array(RuleSpec).default([]),
   allowApprovals: z.array(z.string()).default([]),
   extraWritableRoots: z.array(z.string()).default([]),
 })
+
+/** Plugin config: the named preset table; `default` is required and may be empty. */
+export interface PluginConfig {
+  presets: Record<string, Preset>
+}
+
+/**
+ * Schema for the preset table. The `default` key is mandatory — using the
+ * plugin requires an explicit default, even when it is empty — and every
+ * preset's rules are validated only when compiled (see the plugin constructor).
+ */
+export const PluginConfig = z.transform(
+  z.object({
+    presets: z.dict(Preset),
+  }),
+  (value) => {
+    if (value.presets?.default === undefined) {
+      throw new Error('dsh-custom-permission: presets.default is required (its four fields may be empty)')
+    }
+    return value
+  },
+  true,
+)

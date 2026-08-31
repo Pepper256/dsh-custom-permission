@@ -49,6 +49,12 @@
       "path": "../packages/interaction/commands"
     },
     {
+      "path": "../packages/settings/settings"
+    },
+    {
+      "path": "../packages/settings/settings-file"
+    },
+    {
       "path": "../packages/core/session"
     },
     {

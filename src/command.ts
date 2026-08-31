@@ -1,22 +1,24 @@
 /**
- * The `/custom-permission` slash command: a read-only summary of the active
- * allow/deny rules and extra writable roots, registered only when a commands
- * registry is composed. The rules themselves stay plugin configuration —
- * live profiles reload them by editing the profile's patch file.
+ * The `/custom-permission` slash command: shows the active preset and rules,
+ * lists the presets, and switches the process-level selection. Registered only
+ * when a commands registry is composed; the rules themselves stay plugin
+ * configuration, and the preset list is the plugin's own config table.
  * @module dsh-custom-permission/command
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { CommandResult } from '@deepseek-ai/dsh-commands/types'
 
 /**
  * Register the `/custom-permission` command when `ctx.commands` is composed.
  * @param ctx - the plugin context.
- * @param summarize - renders the active configuration as display text.
+ * @param handle - renders the command's outcome from its raw input
+ *   (`''` = summary, `presets` = list, `preset <name>` = switch).
  */
-export function applyPermissionCommand(ctx: Context, summarize: () => string): void {
+export function applyPermissionCommand(ctx: Context, handle: (rawInput: string) => CommandResult): void {
   ctx.get('commands')?.register({
     name: 'custom-permission',
-    description: 'Show active auto-allow/auto-deny rules and extra writable roots',
-    handler: () => ({ kind: 'success', text: summarize() }),
+    description: 'Show or switch permission presets: /custom-permission [preset <name> | presets]',
+    handler: ({ rawInput }) => handle(rawInput),
   })
 }
