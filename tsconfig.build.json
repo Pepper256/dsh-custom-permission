@@ -3,7 +3,8 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "lib/types",
-    "tsBuildInfoFile": ".tsbuildinfo/build.tsbuildinfo"
+    "tsBuildInfoFile": ".tsbuildinfo/build.tsbuildinfo",
+    "jsx": "react-jsx"
   },
   "include": [
     "src"
@@ -53,6 +54,24 @@
     },
     {
       "path": "../packages/settings/settings-file"
+    },
+    {
+      "path": "../packages/client/ui-conversation"
+    },
+    {
+      "path": "../packages/client/ui-slots"
+    },
+    {
+      "path": "../packages/client/locale"
+    },
+    {
+      "path": "../packages/api/remotes/tsconfig.client.json"
+    },
+    {
+      "path": "../packages/api/settings-controller"
+    },
+    {
+      "path": "../packages/client/connection/tsconfig.client.json"
     },
     {
       "path": "../packages/core/session"

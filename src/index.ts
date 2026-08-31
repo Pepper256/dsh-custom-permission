@@ -70,7 +70,10 @@ export const CUSTOM_PERMISSION_SETTINGS_NAMESPACE = settingsNamespace('custom-pe
 
 /** The settings document's value shape for this plugin. */
 interface PresetSelection {
+  /** The active preset name (user layer, switched through the UI or command). */
   preset: string
+  /** The configured preset names (base layer; the Web client lists them). */
+  presets: string[]
 }
 
 /** The active preset's compiled enforcement state, replaced atomically on switch. */
@@ -184,8 +187,14 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
     const presetChoices = [...presetSpecs.keys()].map(name => z.const(name))
     const settingsSchema: z<PresetSelection> = z.object({
       preset: z.union(presetChoices).required(),
+      // The table lives in the base layer so the Web client can list every
+      // configured preset without a custom Remote surface.
+      presets: z.array(z.string()).required(),
     })
-    installSettingsSection(ctx, CUSTOM_PERMISSION_SETTINGS_NAMESPACE, settingsSchema, { preset: 'default' }, {
+    installSettingsSection(ctx, CUSTOM_PERMISSION_SETTINGS_NAMESPACE, settingsSchema, {
+      preset: 'default',
+      presets: [...presetSpecs.keys()],
+    }, {
       setSource: (current) => {
         this.selectionSource = () => current().preset
       },
