@@ -3,10 +3,13 @@
  * Typert Gateway dispatches the Host service's `typertRemote` binding
  * dynamically (no generator needed), and the client mounts this descriptor
  * through the shipped `ctx.remote.$mount` — version-independent across DSH
- * releases, unlike the `settings` namespace this plugin cannot rely on.
+ * releases, unlike the `settings` namespace this plugin cannot rely on. The
+ * codecs are strict (zod) because deployed DSH clients reject `src-json`
+ * result codecs at mount time.
  * @module dsh-custom-permission/client/remote
  */
 
+import { z } from 'zod'
 import type { TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol'
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -44,6 +47,22 @@ export interface CustomPermissionRemote {
   switch(name: string): Promise<RemoteResult<PresetListView>>
 }
 
+/** Strict wire codecs for the `customPermission` namespace (zod, matching the Host shapes). */
+const presetEntrySchema = z.object({
+  name: z.string(),
+  active: z.boolean(),
+  allowRules: z.array(z.string()),
+  denyRules: z.array(z.string()),
+  allowApprovals: z.array(z.string()),
+  extraWritableRoots: z.array(z.string()),
+})
+const listViewSchema = z.object({
+  active: z.string(),
+  presets: z.array(presetEntrySchema),
+})
+const listViewCodec = { mode: 'strict' as const, typeSymbol: 'dsh-custom-permission#PresetListView', schema: listViewSchema }
+const presetNameCodec = { mode: 'strict' as const, typeSymbol: 'dsh-custom-permission#PresetName', schema: z.string() }
+
 /** Hand-written contribution this browser half mounts into the gateway client. */
 export const CUSTOM_PERMISSION_REMOTE: TypertRemoteContribution = {
   package: 'dsh-custom-permission',
@@ -55,7 +74,7 @@ export const CUSTOM_PERMISSION_REMOTE: TypertRemoteContribution = {
       method: 'list',
       invocation: { kind: 'direct' },
       parameters: [],
-      result: { mode: 'src-json' },
+      result: listViewCodec,
     },
     {
       id: 'dsh-custom-permission#customPermission/switch',
@@ -63,8 +82,8 @@ export const CUSTOM_PERMISSION_REMOTE: TypertRemoteContribution = {
       namespace: 'customPermission',
       method: 'switch',
       invocation: { kind: 'direct' },
-      parameters: [{ name: 'name', wire: 'name', source: 'json', codec: { mode: 'src-json' } }],
-      result: { mode: 'src-json' },
+      parameters: [{ name: 'name', wire: 'name', source: 'json', codec: presetNameCodec }],
+      result: listViewCodec,
     },
   ],
 }
