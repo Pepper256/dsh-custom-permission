@@ -38,11 +38,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /**
- * Required services: the client Remote, the mounted `customPermission`
- * namespace (whose `remote.customPermission` dotted service the traced proxy
- * resolves), the slot system, and the locale registry.
+ * Required services: the client Remote, the slot system, and the locale
+ * registry. The `customPermission` namespace is NOT injected: this plugin
+ * mounts it itself in `apply`, so injecting it would deadlock activation;
+ * the controller reads it with `ctx.get` after the mount settles.
  */
-export const inject = ['remote', 'remote.customPermission', 'slots', 'locale']
+export const inject = ['remote', 'slots', 'locale']
 
 /**
  * Client plugin body: mount the `customPermission` Remote namespace, register
@@ -57,7 +58,7 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-custom-permission: dictionaries')
   const controller = createPanelController(async () => {
     await mounted
-    return ctx.remote.customPermission as unknown as CustomPermissionRemote
+    return (ctx as unknown as { get(name: string): unknown }).get('remote.customPermission') as unknown as CustomPermissionRemote
   })
   ctx.inject(['slots'], (scope: ClientContext) => {
     scope.slots.inject('conversation.input.right', () => scope.slots.register({
