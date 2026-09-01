@@ -29,7 +29,7 @@ function fakeSettings(initial: SettingsNamespaceView[]): {
   const state = { failUpdate: false }
   return {
     remote: {
-      describe: async () => ({ namespaces }) as SettingsDescribeValue,
+      describe: async () => ({ ok: true as const, value: { namespaces } as SettingsDescribeValue }),
       update: async (ns, patch, expectedRevision) => {
         if (state.failUpdate) throw new Error('update failed')
         updates.push({ ns, patch, revision: expectedRevision })
@@ -38,8 +38,8 @@ function fakeSettings(initial: SettingsNamespaceView[]): {
           return { ...entry, value: { ...(entry.value as Record<string, unknown>), ...patch }, revision: entry.revision + 1 }
         }) as unknown as SettingsNamespaceView[]
         const updated = namespaces.find(entry => entry.ns === ns)
-        if (updated === undefined) throw new Error('namespace not found')
-        return updated
+        if (updated === undefined) return { ok: false as const, error: { message: 'namespace not found' } }
+        return { ok: true as const, value: updated }
       },
     },
     get updates() {
@@ -88,12 +88,15 @@ describe('applyPreset', () => {
     expect(result).toMatchObject({ active: 'work' })
   })
 
-  it('propagates update failures', async () => {
+  it('propagates update failures and rejected results', async () => {
     const { remote } = fakeSettings([view('default', ['default', 'work'])])
     remote.update = async () => {
       throw new Error('revision conflict')
     }
     await expect(applyPreset(remote, 'work', 0)).rejects.toThrow('revision conflict')
+
+    remote.update = async () => ({ ok: false, error: { message: 'settings-rejected' } })
+    await expect(applyPreset(remote, 'work', 0)).rejects.toThrow('settings-rejected')
   })
 })
 

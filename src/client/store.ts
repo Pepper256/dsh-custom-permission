@@ -13,10 +13,13 @@ import type { SettingsDescribeValue, SettingsNamespaceView } from '@deepseek-ai/
 /** The settings namespace the Host plugin registers. */
 export const SETTINGS_NAMESPACE = 'custom-permission'
 
-/** The shipped settings Remote face the panel needs. */
+/** The Typert client-Remote result envelope every Remote method returns. */
+export type RemoteResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: { readonly message: string } }
+
+/** The shipped settings Remote face the panel needs (result-envelope form). */
 export interface SettingsRemoteFace {
-  describe(): Promise<SettingsDescribeValue>
-  update(ns: string, patch: Record<string, unknown>, expectedRevision: number | undefined): Promise<SettingsNamespaceView>
+  describe(): Promise<RemoteResult<SettingsDescribeValue>>
+  update(ns: string, patch: Record<string, unknown>, expectedRevision: number | undefined): Promise<RemoteResult<SettingsNamespaceView>>
 }
 
 /** The panel's view of the configured presets. */
@@ -95,12 +98,14 @@ export function parsePresetView(view: SettingsNamespaceView): PresetView | undef
  * Fetch the configured presets and active selection.
  * @param settings - the shipped settings Remote.
  * @returns the parsed view.
- * @throws when the namespace is absent — the plugin is not loaded or its
- *   configuration is invalid, which the caller surfaces with a fix-the-yml hint.
+ * @throws when the Remote rejects or the namespace is absent — the plugin is
+ *   not loaded or its configuration is invalid, which the caller surfaces
+ *   with a fix-the-yml hint.
  */
 export async function fetchPresetView(settings: SettingsRemoteFace): Promise<PresetView> {
-  const describe = await settings.describe()
-  for (const view of describe.namespaces) {
+  const response = await settings.describe()
+  if (!response.ok) throw new Error(response.error.message)
+  for (const view of response.value.namespaces) {
     const parsed = parsePresetView(view)
     if (parsed !== undefined) return parsed
   }
@@ -116,7 +121,8 @@ export async function fetchPresetView(settings: SettingsRemoteFace): Promise<Pre
  * @param revision - the revision the panel read.
  */
 export async function applyPreset(settings: SettingsRemoteFace, name: string, revision: number): Promise<PresetView> {
-  await settings.update(SETTINGS_NAMESPACE, { preset: name }, revision)
+  const response = await settings.update(SETTINGS_NAMESPACE, { preset: name }, revision)
+  if (!response.ok) throw new Error(response.error.message)
   return fetchPresetView(settings)
 }
 
