@@ -37,8 +37,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** Required services: the client Remote, the slot system, and the locale registry. */
-export const inject = ['remote', 'slots', 'locale']
+/**
+ * Required services: the client Remote, the mounted `customPermission`
+ * namespace (whose `remote.customPermission` dotted service the traced proxy
+ * resolves), the slot system, and the locale registry.
+ */
+export const inject = ['remote', 'remote.customPermission', 'slots', 'locale']
 
 /**
  * Client plugin body: mount the `customPermission` Remote namespace, register
