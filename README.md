@@ -188,3 +188,17 @@ pnpm exec vitest run --config dsh-custom-permission/vitest.config.ts   # 运行�
 - **`allowApprovals` 语义宽**：覆盖该工具的升级 ask（单次授权到 `danger-full-access`），请只在信任工具上开启。
 - **挂载约束**：插件提供 `ctx.fs`，依赖 `ctx.sandboxPolicy`（与 `dsh-fs-sandbox` 相同），守卫注册依赖 `ctx.tools`，上下文贡献依赖 `ctx.systemPrompt`；base-backed profile 均具备。
 - **切换是进程级**：`/custom-permission preset <name>` 切的是整个进程（所有会话），不做按会话粒度；会话事件持久化对外部插件不可用（DSH 的已知事件类型白名单），因此选择持久化在 settings 文档而非会话日志。切换的额外根上下文随下一条模型请求生效；正在执行中的调用按切换前规则完成。
+
+## 分发说明
+
+插件不依赖 DSH 源码、不改 DSH 任何文件，运行时只要求 DSH 提供两件**所有 rc.2+ 版本都具备**的基础能力：
+
+1. Typert 网关按 `typertRemote` 绑定动态分发 Remote 端点（Host 侧的 `customPermission/list`、`customPermission/switch`）；
+2. 客户端 `ctx.remote.$mount` 挂载手写贡献（`src-json` 参数 + strict 结果 codec，兼容各版本客户端的校验差异）。
+
+运行时依赖（`@deepseek-ai/cordis`、`schemastery`、`dsh-fs`、`dsh-fs-local`、`dsh-sandbox`、`dsh-settings`、`dsh-typert-protocol`）需要**从 DSH 安装闭包解析**。两种分发路径：
+
+- **装入 DSH 安装闭包**（推荐）：把插件包放进 dsh 安装的 `node_modules`（与 `@deepseek-ai/*` 同层），其裸导入天然从闭包解析——和官方 bundle 一致。
+- **profile 内安装**：用 `dsh plugin add <包>` 装进 profile，且保证 profile 的模块解析能到这些包（闭包 link 或 profile 自身依赖）。`scripts/link-closure-deps.mjs` 只是**开发机桥接**（junction 指向本机全局 dsh 闭包），不属于分发产物。
+
+宿主 UI 半经 `/plugins/<id>/client.js` 运行时服务，无需重建 web 应用；`lib/client.js` 需在启动前构建（`pnpm run build`，tsc + tsdown）。
