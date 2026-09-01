@@ -1,33 +1,16 @@
 /**
- * Preset-panel state and the settings-Remote bridge, browser half. Pure logic
- * with no React/Cordis runtime imports: the panel lists the configured presets
- * (read from the `custom-permission` settings namespace, whose base layer
- * carries the table) and switches the process-level selection through the
- * shipped settings Remote (`describe` + `update`), which the Host plugin
- * already watches. Errors surface with a fix-the-yml hint.
+ * Preset-panel state and the `customPermission` Remote bridge, browser half.
+ * Pure logic with no React/Cordis runtime imports: the panel lists every
+ * configured preset (the Host's Remote view) and switches the process-level
+ * selection through the mounted Remote namespace. Remote rejections and
+ * unknown presets surface with a fix-the-yml hint.
  * @module dsh-custom-permission/client/store
  */
 
-import type { SettingsDescribeValue, SettingsNamespaceView } from '@deepseek-ai/dsh-settings/types'
-
-/** The settings namespace the Host plugin registers. */
-export const SETTINGS_NAMESPACE = 'custom-permission'
-
-/** The Typert client-Remote result envelope every Remote method returns. */
-export type RemoteResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: { readonly message: string } }
-
-/** The shipped settings Remote face the panel needs (result-envelope form). */
-export interface SettingsRemoteFace {
-  describe(): Promise<RemoteResult<SettingsDescribeValue>>
-  update(ns: string, patch: Record<string, unknown>, expectedRevision: number | undefined): Promise<RemoteResult<SettingsNamespaceView>>
-}
+import type { CustomPermissionRemote, PresetListView } from './remote.ts'
 
 /** The panel's view of the configured presets. */
-export interface PresetView {
-  readonly presets: readonly string[]
-  readonly active: string
-  readonly revision: number
-}
+export interface PresetView extends PresetListView {}
 
 /** Minimal observable snapshot source the slot `hooks` compartment accepts. */
 export interface PanelSource<T> {
@@ -39,9 +22,7 @@ export interface PanelSource<T> {
 export interface PanelState {
   readonly open: boolean
   readonly status: 'idle' | 'loading' | 'ready' | 'error'
-  readonly presets: readonly string[]
-  readonly active: string
-  readonly revision: number
+  readonly view: PresetView | null
   readonly error: string | null
   /** Whether the quick-add placeholder hint is showing. */
   readonly quickAddHint: boolean
@@ -50,9 +31,7 @@ export interface PanelState {
 const INITIAL_STATE: PanelState = {
   open: false,
   status: 'idle',
-  presets: [],
-  active: '',
-  revision: 0,
+  view: null,
   error: null,
   quickAddHint: false,
 }
@@ -83,56 +62,51 @@ function createPanelSource(): { source: PanelSource<PanelState>; set(patch: Part
   }
 }
 
-/** Extract this plugin's preset view from one describe response, or undefined. */
-export function parsePresetView(view: SettingsNamespaceView): PresetView | undefined {
-  if (view.ns !== SETTINGS_NAMESPACE) return undefined
-  const value = view.value as { preset?: unknown; presets?: unknown }
-  if (typeof value.preset !== 'string') return undefined
-  const presets = Array.isArray(value.presets)
-    ? value.presets.filter((entry): entry is string => typeof entry === 'string')
-    : []
-  return { presets, active: value.preset, revision: view.revision }
+/** Unwrap one Remote result; rejections and business errors throw their message. */
+function unwrap<T>(response: { readonly ok: boolean; readonly value?: T; readonly error?: { readonly message: string } }): T {
+  if (!response.ok) throw new Error(response.error?.message ?? 'remote call failed')
+  return response.value as T
 }
 
 /**
  * Fetch the configured presets and active selection.
- * @param settings - the shipped settings Remote.
+ * @param remote - the mounted `customPermission` Remote namespace.
  * @returns the parsed view.
- * @throws when the Remote rejects or the namespace is absent — the plugin is
- *   not loaded or its configuration is invalid, which the caller surfaces
- *   with a fix-the-yml hint.
+ * @throws when the Remote rejects — surfaced with a fix-the-yml hint.
  */
-export async function fetchPresetView(settings: SettingsRemoteFace): Promise<PresetView> {
-  const response = await settings.describe()
-  if (!response.ok) throw new Error(response.error.message)
-  for (const view of response.value.namespaces) {
-    const parsed = parsePresetView(view)
-    if (parsed !== undefined) return parsed
-  }
-  throw new Error(`settings namespace "${SETTINGS_NAMESPACE}" is not registered — the plugin may be misconfigured or not loaded`)
+export async function fetchPresetView(remote: CustomPermissionRemote): Promise<PresetView> {
+  return unwrap(await remote.list())
 }
 
 /**
- * Switch the process-level selection through the settings Remote, then return
- * the refreshed view. The revision fences the write: a concurrent change
- * rejects instead of being silently overwritten.
- * @param settings - the shipped settings Remote.
+ * Switch the process-level selection through the Remote, then return the
+ * refreshed view.
+ * @param remote - the mounted `customPermission` Remote namespace.
  * @param name - the preset to activate.
- * @param revision - the revision the panel read.
  */
-export async function applyPreset(settings: SettingsRemoteFace, name: string, revision: number): Promise<PresetView> {
-  const response = await settings.update(SETTINGS_NAMESPACE, { preset: name }, revision)
-  if (!response.ok) throw new Error(response.error.message)
-  return fetchPresetView(settings)
+export async function applyPreset(remote: CustomPermissionRemote, name: string): Promise<PresetView> {
+  return unwrap(await remote.switch(name))
 }
 
-/** Panel controller: wires the components' callbacks to the settings Remote. */
-export function createPanelController(settings: () => SettingsRemoteFace): PanelController {
+/** The panel controller surface shared by the button and panel registers. */
+export interface PanelController {
+  readonly source: PanelSource<PanelState>
+  readonly toggle: () => void
+  readonly close: () => void
+  readonly switchTo: (name: string) => void
+  readonly quickAdd: () => void
+}
+
+/** The selector hook the renderer binds from the inject `hooks` compartment. */
+export type UsePanel = <T>(selector: (state: PanelState) => T) => T
+
+/** Panel controller: wires the components' callbacks to the Remote namespace. */
+export function createPanelController(remote: () => Promise<CustomPermissionRemote>): PanelController {
   const { source, set } = createPanelSource()
   const load = (): void => {
     set({ status: 'loading', error: null })
-    void fetchPresetView(settings()).then(
-      (view) => set({ status: 'ready', presets: view.presets, active: view.active, revision: view.revision }),
+    void remote().then(fetchPresetView).then(
+      (view) => set({ status: 'ready', view }),
       (error: unknown) => set({ status: 'error', error: errorMessage(error) }),
     )
   }
@@ -149,24 +123,13 @@ export function createPanelController(settings: () => SettingsRemoteFace): Panel
     close: () => set({ open: false }),
     switchTo: (name) => {
       set({ status: 'loading', error: null })
-      const revision = source.getSnapshot().revision
-      void applyPreset(settings(), name, revision).then(
-        (view) => set({ status: 'ready', presets: view.presets, active: view.active, revision: view.revision }),
-        (error: unknown) => set({ status: 'error', error: errorMessage(error) }),
-      )
+      void remote()
+        .then(r => applyPreset(r, name))
+        .then(
+          (view) => set({ status: 'ready', view }),
+          (error: unknown) => set({ status: 'error', error: errorMessage(error) }),
+        )
     },
     quickAdd: () => set({ quickAddHint: !source.getSnapshot().quickAddHint }),
   }
 }
-
-/** The panel controller surface shared by the button and panel registers. */
-export interface PanelController {
-  readonly source: PanelSource<PanelState>
-  readonly toggle: () => void
-  readonly close: () => void
-  readonly switchTo: (name: string) => void
-  readonly quickAdd: () => void
-}
-
-/** The selector hook the renderer binds from the inject `hooks` compartment. */
-export type UsePanel = <T>(selector: (state: PanelState) => T) => T

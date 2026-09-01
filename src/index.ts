@@ -56,6 +56,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-commands'
 import type { CommandResult } from '@deepseek-ai/dsh-commands/types'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { bindTypertRemote, Remote } from '@deepseek-ai/dsh-typert-protocol'
 import { lookupCallArguments } from './answerer.ts'
 import { applyPermissionCommand } from './command.ts'
 import { PluginConfig } from './config.ts'
@@ -82,6 +83,22 @@ interface CompiledPreset {
   readonly denyRules: readonly CompiledRule[]
   readonly allowApprovalsSet: ReadonlySet<string>
   readonly extraRoots: readonly string[]
+}
+
+/** Wire view of one configured preset, for the Web client's preset panel. */
+export interface PresetViewEntry {
+  readonly name: string
+  readonly active: boolean
+  readonly allowRules: readonly string[]
+  readonly denyRules: readonly string[]
+  readonly allowApprovals: readonly string[]
+  readonly extraWritableRoots: readonly string[]
+}
+
+/** Wire view of the whole preset table plus the active name. */
+export interface PresetListView {
+  readonly active: string
+  readonly presets: readonly PresetViewEntry[]
 }
 
 /**
@@ -147,6 +164,9 @@ function describeRule(spec: RuleSpec, index: number): string {
  */
 export class CustomPermissionFileSystem extends LocalFileSystem {
   static inject = ['sandboxPolicy', 'tools', 'systemPrompt']
+
+  /** The Typert Gateway binding exposing the `customPermission` Remote namespace. */
+  readonly typertRemote = bindTypertRemote(this, 'fs', { namespace: 'customPermission' })
 
   /**
    * Local backend fields plus the preset table; invalid rules and a missing
@@ -285,6 +305,44 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
       this.selectionSource = () => name
       this.applyPreset(name)
     }
+  }
+
+  /** Build the wire view of every configured preset, for the Web client panel. */
+  private presetListView(): PresetListView {
+    const entries: PresetViewEntry[] = []
+    for (const [name, spec] of this.presetSpecs) {
+      entries.push({
+        name,
+        active: name === this.currentPresetName,
+        allowRules: (spec.allowRules ?? []).map((rule, index) => describeRule(rule, index)),
+        denyRules: (spec.denyRules ?? []).map((rule, index) => describeRule(rule, index)),
+        allowApprovals: spec.allowApprovals ?? [],
+        extraWritableRoots: this.compiledPresets.get(name)?.extraRoots ?? [],
+      })
+    }
+    return { active: this.currentPresetName, presets: entries }
+  }
+
+  /**
+   * Remote: the configured preset table plus the active name, for the Web
+   * client's preset panel.
+   * @returns the full wire view.
+   */
+  @Remote('list')
+  listPresetsRemote(): PresetListView {
+    return this.presetListView()
+  }
+
+  /**
+   * Remote: switch the process-level selection and return the refreshed view.
+   * @param name - the preset to activate.
+   * @returns the full wire view after the switch.
+   * @throws when the preset is unknown — the client surfaces it as an error.
+   */
+  @Remote('switch')
+  switchPresetRemote(name: string): PresetListView {
+    this.switchPreset(name)
+    return this.presetListView()
   }
 
   /** The `/custom-permission` command: bare = summary, `presets` = list, `preset <name>` = switch. */

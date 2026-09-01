@@ -24,6 +24,8 @@ import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import SettingsFile from '@deepseek-ai/dsh-settings-file'
+import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
+import ApiGateway from '@deepseek-ai/dsh-api-gateway'
 import CustomPermissionFileSystem from '../src/index.ts'
 
 let root: string | undefined
@@ -64,6 +66,8 @@ async function compose(
     "- name: '@deepseek-ai/dsh-settings-file'",
     '  config:',
     `    path: '${yamlPath(settingsPath)}'`,
+    "- name: '@deepseek-ai/dsh-typert-registry'",
+    "- name: '@deepseek-ai/dsh-api-gateway'",
     "- name: 'dsh-custom-permission'",
     '  config:',
     '    presets:',
@@ -104,6 +108,8 @@ async function compose(
         case '@deepseek-ai/dsh-user-approval': return ApprovalService
         case '@deepseek-ai/dsh-commands': return CommandRuntime
         case '@deepseek-ai/dsh-settings-file': return SettingsFile
+        case '@deepseek-ai/dsh-typert-registry': return TypertRegistry
+        case '@deepseek-ai/dsh-api-gateway': return ApiGateway
         case 'dsh-custom-permission': return CustomPermissionFileSystem
         default: throw new Error(`unexpected Loader import: ${specifier}`)
       }
@@ -300,6 +306,23 @@ describe('dsh-custom-permission real Loader composition', () => {
 
     const workspaceTarget = await ctx.fs.resolve(join(workspace, 'in.txt'))
     await expect(ctx.fs.writeText(workspaceTarget, 'ws')).resolves.toBeDefined()
+  })
+
+  it('serves the customPermission Remote namespace through the gateway', async () => {
+    const { ctx } = await compose('ask')
+    const gateway = ctx.get('typertGateway') as unknown as {
+      invoke(request: { namespace: string; method: string; args: Record<string, unknown> }): Promise<unknown>
+    }
+
+    const list = await gateway.invoke({ namespace: 'customPermission', method: 'list', args: {} }) as { active: string; presets: Array<{ name: string; active: boolean }> }
+    expect(list.active).toBe('default')
+    expect(list.presets.map(entry => entry.name)).toEqual(['default', 'work'])
+    expect(list.presets.find(entry => entry.name === 'default')?.active).toBe(true)
+
+    const switched = await gateway.invoke({ namespace: 'customPermission', method: 'switch', args: { name: 'work' } }) as { active: string }
+    expect(switched.active).toBe('work')
+
+    await expect(gateway.invoke({ namespace: 'customPermission', method: 'switch', args: { name: 'nope' } })).rejects.toThrow(/unknown preset/)
   })
 
   it('switches presets through the command, applies them to the next call, and persists the selection', async () => {

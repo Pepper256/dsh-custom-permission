@@ -21,7 +21,7 @@ import { isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** Runtime bare imports of the built plugin (see lib/types/*.js after `pnpm run build`). */
-const RUNTIME_DEPS = ['cordis', 'schemastery', 'dsh-fs', 'dsh-fs-local', 'dsh-sandbox', 'dsh-settings']
+const RUNTIME_DEPS = ['cordis', 'schemastery', 'dsh-fs', 'dsh-fs-local', 'dsh-sandbox', 'dsh-settings', 'dsh-typert-protocol']
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const targetRoot = join(repoRoot, 'node_modules', '@deepseek-ai')
