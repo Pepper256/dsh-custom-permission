@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Preset-panel state and the `customPermission` Remote bridge, browser half.
  * Pure logic with no React/Cordis runtime imports: the panel lists every
  * configured preset (the Host's Remote view) and switches the process-level
@@ -8,9 +8,6 @@
  */
 
 import type { CustomPermissionRemote, PresetListView } from './remote.ts'
-
-/** The panel's view of the configured presets. */
-export interface PresetView extends PresetListView {}
 
 /** Minimal observable snapshot source the slot `hooks` compartment accepts. */
 export interface PanelSource<T> {
@@ -22,7 +19,7 @@ export interface PanelSource<T> {
 export interface PanelState {
   readonly open: boolean
   readonly status: 'idle' | 'loading' | 'ready' | 'error'
-  readonly view: PresetView | null
+  readonly view: PresetListView | null
   readonly error: string | null
   /** Whether the quick-add placeholder hint is showing. */
   readonly quickAddHint: boolean
@@ -72,9 +69,9 @@ function unwrap<T>(response: { readonly ok: boolean; readonly value?: T; readonl
  * Fetch the configured presets and active selection.
  * @param remote - the mounted `customPermission` Remote namespace.
  * @returns the parsed view.
- * @throws when the Remote rejects — surfaced with a fix-the-yml hint.
+ * @throws when the Remote rejects 鈥?surfaced with a fix-the-yml hint.
  */
-export async function fetchPresetView(remote: CustomPermissionRemote): Promise<PresetView> {
+export async function fetchPresetView(remote: CustomPermissionRemote): Promise<PresetListView> {
   return unwrap(await remote.list())
 }
 
@@ -84,7 +81,7 @@ export async function fetchPresetView(remote: CustomPermissionRemote): Promise<P
  * @param remote - the mounted `customPermission` Remote namespace.
  * @param name - the preset to activate.
  */
-export async function applyPreset(remote: CustomPermissionRemote, name: string): Promise<PresetView> {
+export async function applyPreset(remote: CustomPermissionRemote, name: string): Promise<PresetListView> {
   return unwrap(await remote.switch(name))
 }
 

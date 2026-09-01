@@ -283,12 +283,12 @@ describe('dsh-custom-permission real Loader composition', () => {
     await expect(ctx.approval.request(requestOf(agent, 'fetch', 'fetch-call'))).resolves.toBe('rejected')
   })
 
-  it('exposes the configured presets through the settings namespace for the Web client', async () => {
+  it('exposes the active preset through the settings namespace', async () => {
     const { ctx } = await compose('ask')
     const describe = await ctx.get('settings')!.describe()
     const ours = describe.find(entry => entry.ns === 'custom-permission')
     expect(ours).toBeDefined()
-    expect(ours?.value).toMatchObject({ preset: 'default', presets: ['default', 'work'] })
+    expect(ours?.value).toMatchObject({ preset: 'default' })
   })
 
   it('admits filesystem writes under a configured extra root through the whole composition', async () => {

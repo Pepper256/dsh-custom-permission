@@ -87,11 +87,6 @@ export const Preset = z.object({
   extraWritableRoots: z.array(z.string()).default([]),
 })
 
-/** Plugin config: the named preset table; `default` is required and may be empty. */
-export interface PluginConfig {
-  presets: Record<string, Preset>
-}
-
 /**
  * Schema for the preset table. The `default` key is mandatory — using the
  * plugin requires an explicit default, even when it is empty — and every
