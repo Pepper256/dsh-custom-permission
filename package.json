@@ -37,8 +37,9 @@
     "build": "tsc --build tsconfig.build.json && tsdown --config tsdown.config.ts",
     "test": "vitest run --config vitest.config.ts"
   },
-  "dependencies": {
-    "esbuild": "^0.25.0"
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "zod": "^4.4.3"
   },
   "license": "MIT"
 }
