@@ -2,7 +2,13 @@
 # dsh-base bundle. It replaces the sandboxed filesystem backend with this
 # plugin (which provides ctx.fs with configurable extra writable roots) and
 # mounts the permission policy. Rows stay patchable by the user's profile
-# cordis.patch.yml, whose last write wins per row.
+# cordis.patch.yml, whose last write wins per row (a row's config is replaced
+# wholesale, never key-merged).
+#
+# The inserted row carries a built-in `default` preset (auto-allows the
+# `write` and `read` tools) so a fresh profile boots without extra config;
+# a user who writes an `- id: custom-permission` row in their own
+# cordis.patch.yml replaces this whole config, including the default.
 #
 # A composition that never mounted dsh-base's fs-sandbox row only sees the
 # disabled-target warning; the inserted row still applies.
@@ -14,3 +20,11 @@
 - insert:
     - id: custom-permission
       name: 'dsh-custom-permission'
+      config:
+        presets:
+          # Default preset shipped with the bundle: auto-allow write/read;
+          # deny/auto-approve/extra roots stay empty (zero blocking).
+          default:
+            allowRules:
+              - tool: 'write'
+              - tool: 'read'

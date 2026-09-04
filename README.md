@@ -11,7 +11,7 @@ DeepSeek Harness（DSH）的外部插件（out-of-tree plugin）。用户在插�
 ## 安装
 
 ```sh
-dsh plugin --profile <name> add <本仓库路径>
+dsh plugin --profile <name> add <本仓库路径>       # 本地目录 / npm tarball / git
 ```
 
 插件在 `package.json` 中声明 `dsh.bundle`，安装后自动成为该 profile 的一层 bundle。bundle 的 `cordis.patch.yml` 会：
@@ -21,7 +21,28 @@ dsh plugin --profile <name> add <本仓库路径>
 
 如果不用 bundle 而是手动组合：必须自行禁用 `dsh-fs-sandbox`，否则两个 `ctx.fs` 提供者会让启动 fail loud。
 
-然后在 profile 的 `cordis.patch.yml`（home 级覆盖 profile 级）里写配置。配置是一张**命名预设表**，`default` 预设必填（四个字段都可以为空）：
+### 开箱默认：bundle 自带的 `default` 预设
+
+插入行自带一份 `default` 预设——**自动允许 `write` 与 `read` 两个工具**（其余 deny/自动放行/额外根为空，零拒绝）：
+
+```yaml
+- id: custom-permission
+  name: 'dsh-custom-permission'
+  config:
+    presets:
+      default:
+        allowRules:
+          - tool: 'write'
+          - tool: 'read'
+```
+
+所以**全新 profile 装完不写任何配置也能启动**（规则 = 自动放行 write/read）。默认内容只是一个起步值：
+
+- 覆盖方式：在 profile（或 home 级）的 `cordis.patch.yml` 写一条同 id 行，**整行替换**这份 config（层叠按 id 后写胜出、不做 key 合并）——写了自己的行后，bundle 默认里的 `default` 不再存在，你的配置必须自行提供 `default`（`default` 仍必填）；
+- 也可以只把默认当作样例：在面板 ⚙ 里直接改这份 `default`（运行期改动会持久化到 `settings.yaml`，见"预设切换与管理"）。
+- 安全提醒：`allowRules` 命中即跳过审批直接执行，因此默认会静默放行 `write`/`read` 的审批（含沙箱升级类 ask）。不需要该默认行为的部署请覆盖为 `default: {}` 或自定义规则。
+
+如果不用 bundle 自带默认，也可以像下面这样在 profile 的 `cordis.patch.yml`（home 级覆盖 profile 级）里写配置。配置是一张**命名预设表**，`default` 预设必填（四个字段都可以为空）：
 
 ```yaml
 - id: custom-permission
@@ -53,7 +74,7 @@ dsh plugin --profile <name> add <本仓库路径>
 
 装好插件后，权限以「**预设**」为单位管理：每个预设是一整套权限规则（允许/拒绝/自动放行/额外路径），**同一时刻只有一个预设生效（进程级，对所有会话一致）**。默认使用 `default` 预设，可随时切换、新建、修改或删除其他预设。两个入口：
 
-- **Web 面板（推荐）**：聊天输入框右侧的 ⚙ 按钮，打开面板即可查看/切换/编辑预设，点面板底部"＋ 快捷添加"新建预设。逐步操作指南见 **[`UI-使用说明.md`](./UI-使用说明.md)**。
+- **Web 面板（推荐）**：聊天输入框右侧的 ⚙ 按钮，打开面板即可查看/切换/编辑预设，点面板底部"＋ 快捷添加"新建预设。逐步操作指南见 **[`UI-使用说明.md`](./docs/UI-使用说明.md)**。
 - **命令**：聊天里输入 `/custom-permission presets` 查看预设列表，`/custom-permission preset <名字>` 切换；裸 `/custom-permission` 显示当前预设的完整规则。
 
 面板/编辑器里设置的每一项，与 YAML 配置里的字段一一对应。四类权限与其中每个字段的含义如下（GUI 填法与示例也一致）：
@@ -249,4 +270,6 @@ pnpm exec vitest run --config dsh-custom-permission/vitest.config.ts   # 运行�
 - **装入 DSH 安装闭包**（推荐）：把插件包放进 dsh 安装的 `node_modules`（与 `@deepseek-ai/*` 同层），其裸导入天然从闭包解析——和官方 bundle 一致。
 - **profile 内安装**：用 `dsh plugin add <包>` 装进 profile，且保证 profile 的模块解析能到这些包（闭包 link 或 profile 自身依赖）。`scripts/link-closure-deps.mjs` 只是**开发机桥接**（junction 指向本机全局 dsh 闭包），不属于分发产物。
 
-宿主 UI 半经 `/plugins/<id>/client.js` 运行时服务，无需重建 web 应用；`lib/client.js` 需在启动前构建（`pnpm run build`，tsc + tsdown）。
+**从 git 安装**（`dsh plugin --profile <名> add github:<owner>/dsh-custom-permission`）：git 拿到的是源码而非构建产物，包内 `prepare` 脚本会用自带的 esbuild 依赖做**自包含转译**（宿主打成单文件 ESM `lib/types/index.js`、客户端按 lazy-CJS 形状打 `lib/client.js`；不依赖 DSH checkout，也不产出 `.d.ts`——运行不受影响，需要声明文件的场景请用 npm/tarball 的完整构建）。pnpm ≥10 首次装 git 依赖会拒绝执行 `prepare`：把 pnpm 打印的包 key 加入该 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds`（如 `dsh-custom-permission: true`）后重跑 `add`——该白名单等于授权包源码在安装时执行，只应给可信来源（并建议固定 commit：`add github:<owner>/dsh-custom-permission#<sha>`）。
+
+宿主 UI 半经 `/plugins/<id>/client.js` 运行时服务，无需重建 web 应用；`lib/client.js` 需在启动前构建（`pnpm run build`，tsc + tsdown，DSH checkout 内）。

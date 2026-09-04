@@ -61,7 +61,7 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-commands'
 import type { CommandResult } from '@deepseek-ai/dsh-commands/types'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { bindTypertRemote, Remote } from '@deepseek-ai/dsh-typert-protocol'
 import { lookupCallArguments } from './answerer.ts'
 import { applyPermissionCommand } from './command.ts'
@@ -78,6 +78,14 @@ import { isPathUnder } from './containment.ts'
 import { EXTRA_ROOTS_CONTEXT_NAME, EXTRA_ROOTS_CONTEXT_ORDER, renderExtraRootsContext } from './context.ts'
 import { compileRules, evaluateRules } from './rules.ts'
 import type { CompiledRule } from './rules.ts'
+
+/** Brand one valid namespace string; mirrors the check the settings service applies. */
+function settingsNamespace(value: string): SettingsNamespace {
+  if (!/^[a-z][a-z0-9-]*$/.test(value)) {
+    throw new TypeError(`settings namespace "${value}" must match ^[a-z][a-z0-9-]*$`)
+  }
+  return value as SettingsNamespace
+}
 
 /** Settings namespace carrying the preset table and the active preset name. */
 export const CUSTOM_PERMISSION_SETTINGS_NAMESPACE = settingsNamespace('custom-permission')
@@ -308,13 +316,44 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
       preset: z.string().required(),
       presets: z.dict(Preset),
     }) as unknown as z<PresetSettingsDocument>
-    installSettingsSection(ctx, CUSTOM_PERMISSION_SETTINGS_NAMESPACE, settingsSchema, { preset: 'default' }, {
-      setSource: (current) => {
-        this.settingsValue = current
-      },
-      onChange: () => {
-        this.syncFromSettings(this.settingsValue())
-      },
+    this.attachSettingsSection(ctx, settingsSchema)
+  }
+
+  /**
+   * Wire the `custom-permission` settings namespace without depending on the
+   * `installSettingsSection` convenience export, which released dsh-settings
+   * versions differ on. Uses only the stable `register`/`watch` surface both
+   * the installed closure and the master source share: while a settings
+   * service exists the namespace is registered with the composition entry as
+   * its base layer; committed changes and attach re-derive the table through
+   * `onChange`, and service teardown falls back to the process-local
+   * composition entry without touching the fiber mid-unload.
+   */
+  private attachSettingsSection(ctx: Context, settingsSchema: z<PresetSettingsDocument>): void {
+    ctx.inject(['settings'], (sctx) => {
+      const settings = sctx.settings as {
+        register<T>(
+          ns: SettingsNamespace,
+          schema: z<T>,
+          options?: { base?: Partial<T> },
+        ): { get(): T; watch(callback: () => void): () => void }
+      }
+      const scope = settings.register<PresetSettingsDocument>(
+        CUSTOM_PERMISSION_SETTINGS_NAMESPACE,
+        settingsSchema,
+        { base: { preset: 'default' } },
+      )
+      let active = true
+      this.settingsValue = () => scope.get()
+      const onChange = (): void => {
+        if (active) this.syncFromSettings(scope.get())
+      }
+      onChange()
+      scope.watch(() => onChange())
+      sctx.effect(() => () => {
+        active = false
+        this.settingsValue = () => ({ preset: 'default' })
+      })
     })
   }
 

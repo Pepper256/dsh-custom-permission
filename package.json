@@ -32,9 +32,13 @@
     }
   },
   "scripts": {
+    "prepare": "node scripts/prepare.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "build": "tsc --build tsconfig.build.json && tsdown --config tsdown.config.ts",
     "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.0"
   },
   "license": "MIT"
 }
