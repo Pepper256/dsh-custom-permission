@@ -38,7 +38,7 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.25.12",
     "zod": "^4.4.3"
   },
   "license": "MIT"
