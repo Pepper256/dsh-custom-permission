@@ -48,10 +48,18 @@ async function compose(
   approvalPolicy: 'ask' | 'never',
 ): Promise<{ ctx: Context; workspace: string; extra: string; settingsPath: string }> {
   root = await mkdtemp(join(tmpdir(), 'dsh-custom-permission-loader-'))
-  const workspace = join(root, 'ws')
-  const extra = join(root, 'extra')
-  const settingsPath = join(root, 'settings.yaml')
-  const configPath = join(root, 'cordis.yml')
+  return boot(root, approvalPolicy)
+}
+
+/** Boot the Loader composition inside an existing root (for restart tests). */
+async function boot(
+  rootPath: string,
+  approvalPolicy: 'ask' | 'never',
+): Promise<{ ctx: Context; workspace: string; extra: string; settingsPath: string }> {
+  const workspace = join(rootPath, 'ws')
+  const extra = join(rootPath, 'extra')
+  const settingsPath = join(rootPath, 'settings.yaml')
+  const configPath = join(rootPath, 'cordis.yml')
   await writeFile(configPath, [
     "- name: '@deepseek-ai/dsh-sandbox-policy'",
     '  config:',
@@ -94,11 +102,11 @@ async function compose(
     '',
   ].join('\n'))
 
-  context = new Context()
-  context.baseUrl = pathToFileURL(root).href + '/'
-  await context.plugin(Loader)
-  context.loader.builtins.include = Include
-  context.loader.internal = {
+  const ctx = new Context()
+  ctx.baseUrl = pathToFileURL(rootPath).href + '/'
+  await ctx.plugin(Loader)
+  ctx.loader.builtins.include = Include
+  ctx.loader.internal = {
     version: 'v2',
     async import(specifier: string) {
       switch (specifier) {
@@ -114,14 +122,16 @@ async function compose(
         default: throw new Error(`unexpected Loader import: ${specifier}`)
       }
     },
-  } as unknown as NonNullable<typeof context.loader.internal>
-  await context.loader.create({
+  } as unknown as NonNullable<typeof ctx.loader.internal>
+  await ctx.loader.create({
     name: 'cordis:include',
     config: { path: pathToFileURL(configPath).href },
   })
-  await context.loader.await()
+  await ctx.loader.await()
 
-  return { ctx: context, workspace, extra, settingsPath }
+  // Module bookkeeping so the default `compose` path disposes on afterEach.
+  context = ctx
+  return { ctx, workspace, extra, settingsPath }
 }
 
 /** A minimal Agent stand-in with a seeded open turn and optional tool/call events. */
@@ -364,5 +374,175 @@ describe('dsh-custom-permission real Loader composition', () => {
     const unknown = await ctx.commands.execute(agent, '/custom-permission preset nope', [], new AbortController().signal)
     expect(unknown?.result).toMatchObject({ kind: 'error' })
     expect(unknown?.result.text).toContain('unknown preset "nope"')
+  })
+})
+
+/** Invoke one `customPermission` Remote method through the live gateway. */
+async function invoke(ctx: Context, method: string, args: Record<string, unknown>): Promise<unknown> {
+  const gateway = ctx.get('typertGateway') as unknown as {
+    invoke(request: { namespace: string; method: string; args: Record<string, unknown> }): Promise<unknown>
+  }
+  return gateway.invoke({ namespace: 'customPermission', method, args })
+}
+
+/** Wait until the settings document contains `needle` (the write is async). */
+async function waitForDocument(settingsPath: string, needle: string): Promise<string> {
+  let document = ''
+  for (let attempt = 0; attempt < 40 && !document.includes(needle); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 50))
+    document = await readFile(settingsPath, 'utf8').catch(() => '')
+  }
+  return document
+}
+
+/** A minimal wire spec for the editor Remotes. */
+function wireSpec(overrides: Partial<{
+  allowRules: Array<Record<string, unknown>>
+  denyRules: Array<Record<string, unknown>>
+  allowApprovals: string[]
+  extraWritableRoots: string[]
+}> = {}): Record<string, unknown> {
+  return {
+    allowRules: [],
+    denyRules: [],
+    allowApprovals: [],
+    extraWritableRoots: [],
+    ...overrides,
+  }
+}
+
+describe('dsh-custom-permission preset editing over the real gateway', () => {
+  it('creates a preset through the Remote, persists it, and enforces it', async () => {
+    const { ctx, settingsPath } = await compose('ask')
+    ctx.tools.register(bashTool)
+
+    const created = await invoke(ctx, 'create', {
+      name: 'ci',
+      spec: wireSpec({ denyRules: [{ tool: 'bash', when: { command: { regex: 'rm -rf /' } }, reason: 'ci denies rm' }] }),
+    }) as { active: string; presets: Array<{ name: string }> }
+    expect(created.active).toBe('ci')
+    expect(created.presets.map(entry => entry.name)).toEqual(['default', 'work', 'ci'])
+
+    // The new preset is active, so the next call is judged under its rules.
+    const result = await ctx.tools.execute({
+      signal: testSignal(), callId: ToolCallId('after-create'), name: 'bash', arguments: { command: 'rm -rf /' },
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0]).toMatchObject({ text: 'Error: ci denies rm' })
+
+    // The full table plus the selection land in the settings document.
+    const document = await waitForDocument(settingsPath, 'preset: ci')
+    expect(document).toContain('preset: ci')
+    expect(document).toContain('ci denies rm')
+  })
+
+  it('returns a structured spec through get for the editor prefill', async () => {
+    const { ctx } = await compose('ask')
+    const spec = await invoke(ctx, 'get', { name: 'default' }) as { allowRules: Array<{ tool: string; when?: Record<string, unknown> }> }
+    expect(spec.allowRules[0]).toMatchObject({ tool: 'bash' })
+    expect(spec.allowRules[0].when?.command).toMatchObject({ regex: '^git ' })
+  })
+
+  it('rejects an invalid spec and a duplicate name without persisting anything', async () => {
+    const { ctx, settingsPath } = await compose('ask')
+
+    await expect(invoke(ctx, 'create', {
+      name: 'bad',
+      // An uncompilable tool pattern fails the Host's own compile step.
+      spec: wireSpec({ allowRules: [{ tool: 'regex:(' }] }),
+    })).rejects.toThrow(/invalid/)
+
+    await expect(invoke(ctx, 'create', {
+      name: 'default',
+      spec: wireSpec(),
+    })).rejects.toThrow(/already exists/)
+
+    const listed = await invoke(ctx, 'list', {}) as { presets: Array<{ name: string }> }
+    expect(listed.presets.map(entry => entry.name)).toEqual(['default', 'work'])
+    // No write ever reached the document (the file may not even exist yet).
+    const document = await readFile(settingsPath, 'utf8').catch(() => '')
+    expect(document).not.toContain('bad')
+  })
+
+  it('edits and renames the active preset through the Remote', async () => {
+    const { ctx, settingsPath } = await compose('ask')
+    ctx.tools.register(echoTool)
+    await invoke(ctx, 'switch', { name: 'work' })
+
+    const updated = await invoke(ctx, 'update', {
+      name: 'work',
+      spec: wireSpec({ denyRules: [{ tool: 'echo', reason: 'work2 denies echo' }] }),
+      renameTo: 'work2',
+    }) as { active: string; presets: Array<{ name: string; active: boolean }> }
+    expect(updated.active).toBe('work2')
+    expect(updated.presets.map(entry => entry.name)).toEqual(['default', 'work2'])
+
+    // Renaming the active preset moves the selection with it.
+    const result = await ctx.tools.execute({
+      signal: testSignal(), callId: ToolCallId('after-update'), name: 'echo', arguments: {},
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0]).toMatchObject({ text: 'Error: work2 denies echo' })
+
+    const document = await waitForDocument(settingsPath, 'preset: work2')
+    expect(document).toContain('preset: work2')
+    expect(document).not.toContain('echo disabled in work preset')
+  })
+
+  it('deletes a preset through the Remote but refuses to delete the active one', async () => {
+    const { ctx } = await compose('ask')
+
+    const afterDelete = await invoke(ctx, 'delete', { name: 'work' }) as { active: string; presets: Array<{ name: string }> }
+    expect(afterDelete.presets.map(entry => entry.name)).toEqual(['default'])
+
+    // `default` is the active preset — deleting it fails loud.
+    await expect(invoke(ctx, 'delete', { name: 'default' })).rejects.toThrow(/cannot delete the active preset/)
+    const listed = await invoke(ctx, 'list', {}) as { presets: Array<{ name: string }> }
+    expect(listed.presets.map(entry => entry.name)).toEqual(['default'])
+  })
+
+  it('restarts with the stored table authoritative over the composition', async () => {
+    const rootPath = await mkdtemp(join(tmpdir(), 'dsh-custom-permission-restart-'))
+    try {
+      const first = await boot(rootPath, 'ask')
+      try {
+        // First session: add a runtime preset and delete the composition `work`
+        // preset — the stored table now is `default` + `ci`, active `ci`.
+        const created = await invoke(first.ctx, 'create', {
+          name: 'ci',
+          spec: wireSpec({ denyRules: [{ tool: 'echo', reason: 'ci restart denies echo' }] }),
+        }) as { presets: Array<{ name: string }> }
+        expect(created.presets.map(entry => entry.name)).toEqual(['default', 'work', 'ci'])
+        await invoke(first.ctx, 'delete', { name: 'work' })
+        // Deleting must actually remove the preset from the stored document
+        // (a merge-only write could never express the removal).
+        const afterDelete = await waitForDocument(first.settingsPath, 'preset: ci')
+        expect(afterDelete).not.toContain('echo disabled in work preset')
+      } finally {
+        await first.ctx.fiber.dispose()
+      }
+
+      // Second session on the same home: the stored table wins over the
+      // composition (which still declares `work`), and the selection restores.
+      const second = await boot(rootPath, 'ask')
+      context = undefined
+      try {
+        const listed = await invoke(second.ctx, 'list', {}) as { active: string; presets: Array<{ name: string }> }
+        expect(listed.active).toBe('ci')
+        expect(listed.presets.map(entry => entry.name)).toEqual(['default', 'ci'])
+
+        // The restored active preset is enforced.
+        second.ctx.tools.register(echoTool)
+        const result = await second.ctx.tools.execute({
+          signal: testSignal(), callId: ToolCallId('after-restart'), name: 'echo', arguments: {},
+        })
+        expect(result.isError).toBe(true)
+        expect(result.content[0]).toMatchObject({ text: 'Error: ci restart denies echo' })
+      } finally {
+        await second.ctx.fiber.dispose()
+      }
+    } finally {
+      await rm(rootPath, { recursive: true, force: true })
+    }
   })
 })

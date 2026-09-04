@@ -1,10 +1,9 @@
 /**
  * The permission-preset panel: lists every configured preset with the active
  * one marked, switches on selection, shows the active preset's rules, and
- * surfaces errors with a fix-the-yml hint. Rendered in the
- * `conversation.input.overlay` slot; renders nothing while closed. A quick-add
- * button sits at the bottom (placeholder only — it does not open the
- * configuration file yet).
+ * offers per-preset edit/delete plus a quick-add action that opens the preset
+ * editor dialog (also rendered from here, layered above the panel). Rendered
+ * in the `conversation.input.overlay` slot; renders nothing while closed.
  * @module dsh-custom-permission/client/PermissionPanel
  */
 
@@ -12,13 +11,23 @@ import type { CSSProperties, ReactElement } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PermissionKey } from './locales.ts'
 import type { PresetViewEntry } from './remote.ts'
-import type { UsePanel } from './store.ts'
+import { PresetEditor } from './PresetEditor.tsx'
+import type { PresetDraft, UsePanel } from './store.ts'
 
 /** The panel's injected face: actions plus the shared state source. */
 export interface PermissionPanelFace {
   readonly close: () => void
   readonly switchTo: (name: string) => void
-  readonly quickAdd: () => void
+  /** Open the create-preset editor (快捷添加). */
+  readonly openCreate: () => void
+  readonly openEdit: (name: string) => void
+  readonly closeEditor: () => void
+  readonly editorSetName: (name: string) => void
+  readonly editorSetDraft: (draft: PresetDraft) => void
+  readonly saveEditor: () => void
+  readonly requestDelete: (name: string) => void
+  readonly cancelDelete: () => void
+  readonly confirmDelete: () => void
   readonly usePanel: UsePanel
 }
 
@@ -30,8 +39,8 @@ const PANEL_STYLE: CSSProperties = {
   bottom: 'calc(100% + 6px)',
   right: 0,
   zIndex: 20,
-  minWidth: 260,
-  maxWidth: 360,
+  minWidth: 300,
+  maxWidth: 400,
   maxHeight: 420,
   overflowY: 'auto',
   background: 'var(--dsw-surface, #fff)',
@@ -47,54 +56,107 @@ const PANEL_STYLE: CSSProperties = {
 
 /** The permission-preset panel; null while closed. */
 export function PermissionPanel(props: PermissionPanelProps & Record<string, unknown>): ReactElement | null {
-  const { close, switchTo, quickAdd, usePanel, t } = props
+  const {
+    close, switchTo, openCreate, openEdit, requestDelete, cancelDelete, confirmDelete,
+    usePanel, t,
+  } = props
   const panel = usePanel(state => state)
   if (!panel.open) return null
   const active = panel.view?.presets.find(entry => entry.active)
   return (
-    <div role="dialog" aria-label={t('panel.title')} style={PANEL_STYLE}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-        <strong>{t('panel.title')}</strong>
-        <button type="button" onClick={() => close()} aria-label={t('panel.close')} style={closeButtonStyle}>
-          ✕
-        </button>
-      </div>
-      {panel.status === 'loading' && <div style={{ padding: '4px 0' }}>{t('panel.loading')}</div>}
-      {panel.status === 'error' && (
-        <div style={{ padding: '4px 0', color: 'var(--dsw-error, #cf222e)' }}>
-          <div>{t('panel.error')}</div>
-          {panel.error !== null && <div style={{ opacity: 0.8, wordBreak: 'break-word' }}>{t('panel.error.detail', { detail: panel.error })}</div>}
+    <>
+      <div role="dialog" aria-label={t('panel.title')} style={PANEL_STYLE}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <strong>{t('panel.title')}</strong>
+          <button type="button" onClick={() => close()} aria-label={t('panel.close')} style={closeButtonStyle}>
+            ✕
+          </button>
         </div>
-      )}
-      {panel.status === 'ready' && panel.view !== null && (
-        <>
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {panel.view.presets.length === 0
-              ? <li style={{ padding: '4px 0', opacity: 0.8 }}>{t('panel.empty')}</li>
-              : panel.view.presets.map(entry => (
-                <li key={entry.name} style={{ margin: '2px 0' }}>
-                  <button
-                    type="button"
-                    onClick={() => switchTo(entry.name)}
-                    aria-pressed={entry.active}
-                    style={{ ...presetButtonStyle, fontWeight: entry.active ? 600 : 400 }}
-                  >
-                    <span>{entry.name}</span>
-                    {entry.active && <span style={{ marginLeft: 8, opacity: 0.7 }}>{t('panel.active')}</span>}
-                  </button>
-                </li>
-              ))}
-          </ul>
-          {active !== undefined && <PresetDetails entry={active} t={t} />}
-        </>
-      )}
-      <div style={{ borderTop: '1px solid var(--dsw-border, #d0d7de)', marginTop: 6, paddingTop: 6 }}>
-        <button type="button" onClick={() => quickAdd()} style={presetButtonStyle}>
-          ＋ {t('panel.quickAdd')}
-        </button>
-        {panel.quickAddHint && <div style={{ padding: '4px 0', opacity: 0.8 }}>{t('panel.quickAddHint')}</div>}
+        {panel.status === 'loading' && <div style={{ padding: '4px 0' }}>{t('panel.loading')}</div>}
+        {panel.status === 'error' && (
+          <div style={{ padding: '4px 0', color: 'var(--dsw-error, #cf222e)' }}>
+            <div>{t('panel.error')}</div>
+            {panel.error !== null && <div style={{ opacity: 0.8, wordBreak: 'break-word' }}>{t('panel.error.detail', { detail: panel.error })}</div>}
+          </div>
+        )}
+        {panel.status === 'ready' && panel.view !== null && (
+          <>
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+              {panel.view.presets.length === 0
+                ? <li style={{ padding: '4px 0', opacity: 0.8 }}>{t('panel.empty')}</li>
+                : panel.view.presets.map(entry => (
+                  <PresetRow
+                    key={entry.name}
+                    entry={entry}
+                    t={t}
+                    pendingDelete={panel.pendingDelete === entry.name}
+                    onSwitch={() => switchTo(entry.name)}
+                    onEdit={() => openEdit(entry.name)}
+                    onDelete={() => requestDelete(entry.name)}
+                    onCancelDelete={() => cancelDelete()}
+                    onConfirmDelete={() => confirmDelete()}
+                  />
+                ))}
+            </ul>
+            {active !== undefined && <PresetDetails entry={active} t={t} />}
+          </>
+        )}
+        <div style={{ borderTop: '1px solid var(--dsw-border, #d0d7de)', marginTop: 6, paddingTop: 6 }}>
+          <button type="button" onClick={() => openCreate()} style={presetButtonStyle}>
+            ＋ {t('panel.quickAdd')}
+          </button>
+        </div>
       </div>
-    </div>
+      <PresetEditor
+        closeEditor={props.closeEditor}
+        editorSetName={props.editorSetName}
+        editorSetDraft={props.editorSetDraft}
+        saveEditor={props.saveEditor}
+        usePanel={usePanel}
+        t={t}
+      />
+    </>
+  )
+}
+
+/** One preset row: switch on the name, edit/delete actions on the right. */
+function PresetRow(props: {
+  readonly entry: PresetViewEntry
+  readonly t: (key: PermissionKey, params?: Record<string, string>) => string
+  readonly pendingDelete: boolean
+  readonly onSwitch: () => void
+  readonly onEdit: () => void
+  readonly onDelete: () => void
+  readonly onCancelDelete: () => void
+  readonly onConfirmDelete: () => void
+}): ReactElement {
+  const { entry, t, pendingDelete, onSwitch, onEdit, onDelete, onCancelDelete, onConfirmDelete } = props
+  return (
+    <li style={{ display: 'flex', alignItems: 'center', gap: 2, margin: '2px 0' }}>
+      <button
+        type="button"
+        onClick={onSwitch}
+        aria-pressed={entry.active}
+        title={t('panel.switchTo', { name: entry.name })}
+        style={{ ...presetButtonStyle, flex: 1, fontWeight: entry.active ? 600 : 400 }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.name}</span>
+        {entry.active && <span style={{ marginLeft: 8, opacity: 0.7, flexShrink: 0 }}>{t('panel.active')}</span>}
+      </button>
+      <button type="button" onClick={onEdit} aria-label={t('panel.edit', { name: entry.name })} title={t('panel.edit', { name: entry.name })} style={iconButtonStyle}>
+        ✎
+      </button>
+      {pendingDelete ? (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+          <button type="button" onClick={onConfirmDelete} style={dangerConfirmStyle}>{t('panel.delete.confirm')}</button>
+          <button type="button" onClick={onCancelDelete} aria-label={t('panel.delete.cancel')} style={iconButtonStyle}>✕</button>
+        </span>
+      ) : (
+        <button type="button" onClick={onDelete} aria-label={t('panel.delete', { name: entry.name })} title={t('panel.delete', { name: entry.name })} style={iconButtonStyle}>
+          🗑
+        </button>
+      )}
+    </li>
   )
 }
 
@@ -145,7 +207,7 @@ const presetButtonStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  width: '100%',
+  minWidth: 0,
   padding: '4px 6px',
   borderRadius: 4,
   border: 'none',
@@ -154,4 +216,25 @@ const presetButtonStyle: CSSProperties = {
   cursor: 'pointer',
   textAlign: 'left',
   fontSize: 13,
+}
+
+const iconButtonStyle: CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  cursor: 'pointer',
+  fontSize: 13,
+  color: 'inherit',
+  opacity: 0.75,
+  padding: '2px 3px',
+  flexShrink: 0,
+}
+
+const dangerConfirmStyle: CSSProperties = {
+  ...iconButtonStyle,
+  color: 'var(--dsw-error, #cf222e)',
+  fontWeight: 600,
+  border: '1px solid currentColor',
+  borderRadius: 4,
+  padding: '1px 5px',
+  whiteSpace: 'nowrap',
 }

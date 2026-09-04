@@ -3,9 +3,9 @@
  * permission-preset panel. The button renders in `conversation.input.right`;
  * the panel renders in `conversation.input.overlay` and lists every configured
  * preset with its rules (served by the plugin's own `customPermission` Remote
- * namespace), switches the process-level selection through it, and surfaces
- * errors with a fix-the-yml hint. A quick-add button sits in the panel as a
- * placeholder — it does not open the configuration file yet.
+ * namespace), switches the process-level selection through it, and drives
+ * preset creation/editing/deletion through the editor dialog. Errors surface
+ * with their message; every write is validated and persisted Host-side.
  * @module dsh-custom-permission/client
  */
 
@@ -49,8 +49,8 @@ export const inject = ['remote', 'slots', 'locale']
  * Client plugin body: mount the `customPermission` Remote namespace, register
  * the dictionaries, then mount the composer button and the preset panel once
  * the conversation slots are declared. Both registers share one controller
- * whose state source rides the inject `hooks` compartment, so the button and
- * the panel stay in sync without a cross-slot store.
+ * whose state source rides the inject `hooks` compartment, so the button, the
+ * panel, and the editor dialog stay in sync without a cross-slot store.
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
@@ -69,7 +69,15 @@ export function apply(ctx: ClientContext): void {
         toggle: controller.toggle,
         close: controller.close,
         switchTo: controller.switchTo,
-        quickAdd: controller.quickAdd,
+        openCreate: controller.openCreate,
+        openEdit: controller.openEdit,
+        closeEditor: controller.closeEditor,
+        editorSetName: controller.editorSetName,
+        editorSetDraft: controller.editorSetDraft,
+        saveEditor: controller.saveEditor,
+        requestDelete: controller.requestDelete,
+        cancelDelete: controller.cancelDelete,
+        confirmDelete: controller.confirmDelete,
         hooks: { panel: controller.source },
       }),
     }, PermissionButton as unknown as (props: PermissionButtonProps) => ReturnType<typeof PermissionButton>))
@@ -82,7 +90,15 @@ export function apply(ctx: ClientContext): void {
         toggle: controller.toggle,
         close: controller.close,
         switchTo: controller.switchTo,
-        quickAdd: controller.quickAdd,
+        openCreate: controller.openCreate,
+        openEdit: controller.openEdit,
+        closeEditor: controller.closeEditor,
+        editorSetName: controller.editorSetName,
+        editorSetDraft: controller.editorSetDraft,
+        saveEditor: controller.saveEditor,
+        requestDelete: controller.requestDelete,
+        cancelDelete: controller.cancelDelete,
+        confirmDelete: controller.confirmDelete,
         hooks: { panel: controller.source },
       }),
     }, PermissionPanel as unknown as (props: PermissionPanelProps) => ReturnType<typeof PermissionPanel>))

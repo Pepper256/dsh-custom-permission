@@ -381,3 +381,14 @@ dsh plugin --profile <name> add <本仓库路径或包名>
 2. **沙箱外文件是否需要 bash 侧**：v1 只覆盖文件系统工具；进程沙箱扩展需要自定义 `ctx.sandbox` 提供者，保持为非 v1 候选。
 3. **`allowApprovals` 是否允许覆盖升级 ask**：实现为覆盖（含升级 ask），默认空数组、README 显著提示。
 4. 目标 profile：web / headless 等 base-backed profile 均支持（经 `dsh plugin add` 安装）。
+
+## 12. 增补：运行期预设管理（Web 快捷添加 / 编辑 / 删除）
+
+> 按用户需求新增（README.md「预设切换与管理」为准），相对原始设计的语义变化：
+
+- **种子模型**：composition（cordis.patch.yml）的预设表是种子；settings 文档的 `custom-permission` 命名空间无用户预设表时以其为准，第一次运行期写入（Web 或命令）把整张表拷入设置文档，此后设置文档全权管理（patch 改动被覆盖；删除/改名才能被表达）。
+- **写入方式**：整段 `replace`（不是 `update` 合并）——settings 的递归合并写无法表达 key 删除，`update` 会让被删的预设每次重启复活（真实组合测试暴露并锁定）。
+- **settings 文档形态**：`{ preset: string, presets?: Record<string, Preset> }`；schema `z.dict(Preset)` 校验存储表结构、编译与激活名校验在 attach 时 fail loud。
+- **Remote 端点扩展**：`customPermission` 命名空间新增 `get`（结构化 spec 回填编辑器）、`create`（校验+编译+持久化并激活）、`update`（改规则/改名，激活项改名跟随）、`delete`（守卫：不能删激活项/最后一个）。客户端全部 strict zod codec。
+- **编辑器 UI**：四类权限分别录入；允许/拒绝规则行 = 工具模式 + 条件行（字段 × contains/regex/prefix/glob）+ 可选 reason；保存前客户端预检（空名/空白/重名），宿主端权威校验（名称、可编译性）失败即报错不落盘。
+- 守卫与 fail-loud 语义全部沿用；改名/删除经整表替换持久化（见上）。

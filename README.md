@@ -49,12 +49,14 @@ dsh plugin --profile <name> add <本仓库路径>
 
 `patchReload: live` 的 profile（默认的 web 等）下，改 patch 文件会热重载插件，预设表随重载生效。
 
-## 预设切换
+## 预设切换与管理
 
 - 进程级切换：`/custom-permission preset <name>` 立即切换当前预设（下一条工具调用即按新预设判定）；`/custom-permission presets` 列出预设与当前激活项；裸 `/custom-permission` 显示当前预设的完整规则。
-- **Web GUI 按钮**：聊天输入框右侧的 ⚙ 按钮（浏览器半，随 profile 挂载即出现、无需重建 web 应用）打开预设面板——列出全部预设（含各自规则/自动放行/额外根，当前预设详情置底）、点击切换（进程级、所有会话生效）；出错时面板提示"检查并修复 cordis.patch.yml"。面板内的"快捷添加"按钮目前是占位（不打开配置文件，快捷添加即将支持）。面板数据与切换走插件自己的 `customPermission` Remote 命名空间（网关动态分发 + 客户端 `$mount` 挂载，与 DSH 版本无关）。
-- 切换选择持久化到 `settings.yaml` 的 `custom-permission` 命名空间（热重载）：重启后保持上次选择；存储了未知预设名会使插件加载失败（fail loud，不静默回退）。
-- 任何预设（含 `default`）校验/编译失败都抛错：加载时任一坏预设使插件加载失败并指名预设；切换目标不存在时报错、当前预设不变。
+- **Web GUI 按钮**：聊天输入框右侧的 ⚙ 按钮（浏览器半，随 profile 挂载即出现、无需重建 web 应用）打开预设面板——列出全部预设（含各自规则/自动放行/额外根，当前预设详情置底）、点击切换（进程级、所有会话生效）；每行提供**编辑**（✎）与**删除**（🗑，两步确认）操作。
+- **快捷添加 / 编辑器**：面板底部"＋ 快捷添加"弹出编辑器，可对四类权限（自动允许 / 自动拒绝 / 自动放行工具 / 额外可写路径）逐条添加：允许与拒绝支持"工具模式 + 按字段条件"（`command` 等字段上的 contains/regex/prefix/glob 可多条件组合，拒绝规则可写模型可见的 `reason`）；填写名称后"创建并启用"——**自动新建预设并切换为当前预设**。编辑现有预设同样可改规则与名称（改名会同步移动激活标记）。
+- 面板数据与写操作走插件自己的 `customPermission` Remote 命名空间（网关动态分发 + 客户端 `$mount` 挂载，与 DSH 版本无关）；每次写操作宿主端先校验（名称合法性/重名/规则可编译）再持久化，失败以错误提示返回、不产生半成品。
+- **持久化语义**：切换选择与运行期改动的预设表持久化到 `settings.yaml` 的 `custom-permission` 命名空间（热重载）。composition 里配置的预设表是**种子**：设置文档尚无用户预设表时以 composition 为准（此时改 patch 文件仍热重载生效）；第一次运行期改动（Web 或命令）会把整张表拷入设置文档，此后**设置文档全权管理**（后续 patch 改动被覆盖，除非清除该命名空间）。守卫：不能删除当前激活的预设、不能删除最后一个预设；删除/改名通过整段替换写入（settings 的合并写无法表达删除）。
+- 重启后保持上次的选择与运行期预设表；存储了未知预设名、或任一预设校验/编译失败都会使插件加载失败并指名预设（fail loud，不静默回退）。任何预设（含 `default`）在加载或写入时校验/编译失败都抛错；切换目标不存在时报错、当前预设不变。
 
 ## 配置字段
 
@@ -158,7 +160,8 @@ dsh --profile permtest --port 0 --no-open   # 或手动启动（--port 0 自动�
 3. **沙箱外文件**：让模型直接写 `extraWritableRoots` 下的文件（如 `C:\...\dsh-extra-test\a.txt`）→ 直接成功；模型上下文里会出现 `also writable` 的额外路径说明。对比：不配置额外根时，同样的写会被 `[sandbox: file access denied under workspace-write mode]` 拒绝。
 4. **预设切换**：输入 `/custom-permission presets` 查看预设列表；`/custom-permission preset locked` 切换 → 再让模型写文件，`write` 工具会被拒（locked 预设禁用了它）；`/custom-permission preset default` 切回。切换持久化在 `settings.yaml`，重启后保持。
 5. **`/custom-permission`**：裸调用展示当前预设的完整规则与额外根。
-6. 改 `cordis.patch.yml` 里的预设后无需重启（live 热重载）。
+6. 改 `cordis.patch.yml` 里的预设后无需重启（live 热重载）——前提是设置文档里还没有运行期预设表（第一次运行期改动后，patch 中的预设被覆盖，见"预设切换与管理"）。
+7. **快捷添加 / 编辑 / 删除预设**：点 ⚙ 打开面板 → "＋ 快捷添加"弹编辑器：填名称（如 `demo`）、在"自动拒绝"里添加规则（tool 填 `pwsh`，条件字段 `command` + contains + `DANGER_MARKER`，可选拒绝原因）→ "创建并启用"后该预设成为当前预设，模型再运行带 `DANGER_MARKER` 的 pwsh 命令会被拒。行内 ✎ 编辑（可改名），🗑 两步确认删除（删除当前激活预设会被拒绝）。改动持久化在 `settings.yaml`，重启后保留。
 
 ### 5. 回滚
 
@@ -193,7 +196,7 @@ pnpm exec vitest run --config dsh-custom-permission/vitest.config.ts   # 运行�
 
 插件不依赖 DSH 源码、不改 DSH 任何文件，运行时只要求 DSH 提供两件**所有 rc.2+ 版本都具备**的基础能力：
 
-1. Typert 网关按 `typertRemote` 绑定动态分发 Remote 端点（Host 侧的 `customPermission/list`、`customPermission/switch`）；
+1. Typert 网关按 `typertRemote` 绑定动态分发 Remote 端点（Host 侧的 `customPermission/list|switch|get|create|update|delete`）；
 2. 客户端 `ctx.remote.$mount` 挂载手写贡献（`src-json` 参数 + strict 结果 codec，兼容各版本客户端的校验差异）。
 
 运行时依赖（`@deepseek-ai/cordis`、`schemastery`、`dsh-fs`、`dsh-fs-local`、`dsh-sandbox`、`dsh-settings`、`dsh-typert-protocol`）需要**从 DSH 安装闭包解析**。两种分发路径：

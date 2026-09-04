@@ -88,6 +88,44 @@ export const Preset = z.object({
 })
 
 /**
+ * JSON wire form of one argument-field matcher, as Remote get/create/update
+ * carry it: every value is a plain string (a `regex` source, never a `RegExp`
+ * instance) so the payload survives JSON.
+ */
+export interface FieldMatcherWire {
+  /** JavaScript regular-expression source (unescaped search). */
+  regex?: string
+  /** Literal prefix the string must start with. */
+  prefix?: string
+  /** Glob (`*`, `**`, `?`, `[set]`, `{a,b}`) the whole string must match. */
+  glob?: string
+  /** Literal substring the string must contain. */
+  contains?: string
+}
+
+/** JSON wire form of one rule: same shape as {@link RuleSpec}, regexes as sources. */
+export interface RuleSpecWire {
+  /** Tool-name pattern: exact name, glob, or `regex:<pattern>`. */
+  tool: string
+  /** Argument-field conditions keyed by dotted field path. */
+  when?: Record<string, FieldMatcherWire>
+  /** Model-visible denial text for deny rules. */
+  reason?: string
+}
+
+/** JSON wire form of one preset spec, carried by the Remote editor endpoints. */
+export interface PresetSpecWire {
+  /** Allow rules; a matching tool call short-circuits to `allow` before hooks. */
+  allowRules: RuleSpecWire[]
+  /** Deny rules; a matching tool call is denied before approval and again by the monotonic guard. */
+  denyRules: RuleSpecWire[]
+  /** Tool-level auto-grants: every ask for these tools resolves `allowed-once`. */
+  allowApprovals: string[]
+  /** Extra paths the filesystem fence admits for writes under `workspace-write`. */
+  extraWritableRoots: string[]
+}
+
+/**
  * Schema for the preset table. The `default` key is mandatory — using the
  * plugin requires an explicit default, even when it is empty — and every
  * preset's rules are validated only when compiled (see the plugin constructor).
