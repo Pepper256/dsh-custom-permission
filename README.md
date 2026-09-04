@@ -2,8 +2,6 @@
 
 DeepSeek Harness（DSH）的**外部权限插件**：以「命名预设」为单位，为工具调用与 shell 命令配置自动允许 / 自动拒绝规则、为文件系统工具配置沙箱之外的额外可写路径，并提供 Web 面板可视化地查看、切换、新建、编辑与删除预设。
 
-实现完全基于 DSH 的公开扩展点（工具执行瀑布、审批应答、文件系统后端、Typert Remote、Web 客户端插槽），**不修改 DSH 仓库的任何源码或文档**；并始终跟随 npm 上发布的最新版 DSH 适配验证。
-
 ## 介绍
 
 插件把权限整理成一张**预设表**：每个预设是一整套权限，**同一时刻只有一个预设生效（进程级，对所有会话一致）**，默认激活名为 `default` 的预设。每个预设可配置四类内容：
@@ -24,11 +22,11 @@ DeepSeek Harness（DSH）的**外部权限插件**：以「命名预设」为单
 dsh plugin --profile <name> add <插件包路径或包名>
 
 # 方式二：从 git 直接安装（GitHub 用户/组织与仓库）
-dsh plugin --profile <name> add github:<owner>/dsh-custom-permission
+dsh plugin --profile <name> add github:Pepper256/dsh-custom-permission
 ```
 
 - 首次使用会初始化 profile（自动带上 `@deepseek-ai/dsh-base`），并把插件加进 bundles；该插件是 bundle：它**禁用 base 的沙箱文件系统后端（`fs-sandbox`），并作为唯一的 `ctx.fs` 提供者**，再挂载上面的权限策略。
-- **从 git 安装**：git 拿到的是源码，安装时会执行包内的 `prepare` 脚本自包含构建产物；pnpm ≥10 首次会拒绝执行，按提示把打印出的包 key 加入该 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds`（例如 `dsh-custom-permission@…: true`）后重跑 `add`。该白名单等于授权包源码在安装时执行，请只信任来源并建议固定 commit（`add github:<owner>/dsh-custom-permission#<sha>`）。
+- **从 git 安装**：git 拿到的是源码，安装时会执行包内的 `prepare` 脚本自包含构建产物；pnpm ≥10 首次会拒绝执行，按提示把打印出的包 key 加入该 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds`（例如 `dsh-custom-permission@…: true`）后重跑 `add`。该白名单等于授权包源码在安装时执行，请只信任来源并建议固定 commit（`add github:Pepper256/dsh-custom-permission#<sha>`）。
 
 ### 自定义预设（可选）
 
