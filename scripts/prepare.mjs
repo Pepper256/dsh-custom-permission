@@ -51,7 +51,7 @@ async function run() {
     platform: 'node',
     format: 'esm',
     target: 'es2024',
-    external: [/^@deepseek-ai\//],
+    external: ['@deepseek-ai/*'],
     logLevel: 'info',
   })
 
