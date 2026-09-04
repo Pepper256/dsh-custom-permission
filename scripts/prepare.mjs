@@ -17,7 +17,7 @@
  *
  * Declaration files are not produced here; the full `pnpm run build`
  * (tsc + tsdown, in the DSH checkout) remains the release path that emits
- * `lib/types/**/*.d.ts`.
+ * the `*.d.ts` declarations under `lib/types`.
  * @module dsh-custom-permission/prepare
  */
 
