@@ -260,6 +260,8 @@ pnpm exec vitest run --config dsh-custom-permission/vitest.config.ts   # 运行�
 
 ## 分发说明
 
+**兼容方针：插件始终适配 npm 发布的最新版 dsh**，每次 dsh 发布新版后按其发布 API 重新验证（类型/组合/运行）。仅依赖各发布线都稳定的扩展面；`dsh-settings` 的命名空间接线等易变 API 在插件内自持实现，避免跟随上游重导出漂移。已验证：`0.1.1-rc.2`（真实 GUI 运行）与 npm latest `0.1.2-rc.1`（真实启动 + git 安装路径验证）；仓库主线的 `0.1.3-alpha.1`（未发布）类型基线随上游合并后适配。
+
 插件不依赖 DSH 源码、不改 DSH 任何文件，运行时只要求 DSH 提供两件**所有 rc.2+ 版本都具备**的基础能力：
 
 1. Typert 网关按 `typertRemote` 绑定动态分发 Remote 端点（Host 侧的 `customPermission/list|switch|get|create|update|delete`）；
