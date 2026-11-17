@@ -42,13 +42,29 @@ class FakeSettings extends Service {
   describe(): Array<{ ns: string; revision: number; schema: unknown }> {
     return [{ ns: 'custom-permission', revision: this.writes.length + 1, schema: CustomPermissionFileSystem.Config }]
   }
-  /** Apply a volatile-field write to the live references (as the Loader would). */
-  async update(_ns: string, patch: Record<string, unknown>): Promise<void> {
-    this.writes.push(patch)
-    if (patch.presets !== undefined) {
-      this.live.presets = patch.presets as Record<string, PresetSpec>
+  /** Apply a volatile-field replacement to the live references (as the Loader would). */
+  async replace(_ns: string, section: Record<string, unknown>): Promise<void> {
+    this.writes.push(section)
+    if (section.presets !== undefined) {
+      this.live.presets = section.presets as Record<string, PresetSpec>
     }
-    if (typeof patch.active === 'string') this.live.active = patch.active
+    if (typeof section.active === 'string') this.live.active = section.active
+  }
+}
+
+/** The stub config editor: exposes this plugin's own profile row for id discovery. */
+class FakeConfigEditor extends Service {
+  constructor(ctx: Context) {
+    super(ctx, 'configEditor')
+  }
+  /** One row whose fiber recorded this class's static Config as its Config schema. */
+  configuration(): Array<{ entry: { options: { id: string }; fiber: { runtime: { Config: unknown } } } }> {
+    return [{
+      entry: {
+        options: { id: 'custom-permission' },
+        fiber: { runtime: { Config: CustomPermissionFileSystem.Config } },
+      },
+    }]
   }
 }
 
@@ -95,7 +111,10 @@ async function compose(options: {
   await ctx.plugin(Tools)
   await ctx.plugin({ inject: nativeExecutorInject, apply: applyNativeExecutor })
   live = { presets: options.table ?? presets([extra]), active: options.active ?? 'default' }
-  if (options.settings !== false) await ctx.plugin(FakeSettings, live)
+  if (options.settings !== false) {
+    await ctx.plugin(FakeConfigEditor)
+    await ctx.plugin(FakeSettings, live)
+  }
   fiber = await ctx.plugin(CustomPermissionFileSystem, {
     cwd: workspace,
     presets: live.presets,

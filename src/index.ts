@@ -89,8 +89,11 @@ import type { CompiledRule } from './rules.ts'
 interface SettingsFormsLike {
   /** Live configuration descriptors, one per addressable profile entry. */
   describe(): Array<{ readonly ns: string; readonly revision: number; readonly schema: unknown }>
-  /** Merge a volatile-field patch into one profile entry's config. */
-  update(ns: string, patch: object, expectedRevision?: number): Promise<void>
+  /**
+   * Replace one profile entry's volatile fields wholesale. `update` merges and
+   * could never express a removed preset, so the plugin always replaces.
+   */
+  replace(ns: string, section: object, expectedRevision?: number): Promise<void>
 }
 
 /** The active preset's compiled enforcement state, replaced atomically on switch. */
@@ -213,7 +216,7 @@ function matcherToWire(matcher: FieldMatcherSpec): FieldMatcherWire {
 /** One rule to its JSON wire form (see {@link matcherToWire}). */
 function ruleToWire(rule: RuleSpecSpec): RuleSpecWire {
   const wire: RuleSpecWire = { tool: rule.tool }
-  if (rule.when !== undefined) {
+  if (rule.when !== undefined && Object.keys(rule.when).length > 0) {
     wire.when = {}
     for (const [field, matcher] of Object.entries(rule.when)) {
       wire.when[field] = matcherToWire(matcher)
@@ -487,19 +490,32 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
   }
 
   /**
-   * Locate this plugin's profile entry in the settings service. The entry's
-   * schema is this class's static Config (the Loader records it on the fiber),
-   * so the address is discovered rather than hardcoded, and a renamed profile
-   * row keeps working.
+   * Locate this plugin's profile entry id for settings writes. The settings
+   * service itself exposes only the projected form snapshot, so the address is
+   * found through the config editor's Loader entries: the entry whose fiber
+   * recorded this class's static Config as its Config schema is the plugin's
+   * own row, whatever id the profile gave it.
    * @param settings - the composed settings service.
-   * @returns the profile entry id, or undefined when the entry is not configurable here.
+   * @returns the profile entry id, or undefined when the entry is not addressable here.
    */
   private settingsNamespace(settings: SettingsFormsLike): string | undefined {
     try {
-      const descriptor = settings.describe().find(entry => entry.schema === CustomPermissionFileSystem.Config)
-      return descriptor?.ns
+      const configEditor = this.ctx.get('configEditor') as {
+        configuration(): Array<{
+          entry: {
+            readonly options?: { readonly id?: string } | undefined
+            readonly fiber?: { readonly runtime?: { readonly Config?: unknown } | null } | null | undefined
+          }
+        }>
+      } | undefined
+      if (configEditor !== undefined) {
+        const row = configEditor.configuration().find(({ entry }) => entry.fiber?.runtime?.Config === CustomPermissionFileSystem.Config)
+        const id = row?.entry.options?.id
+        if (id !== undefined) return id
+      }
+      return undefined
     } catch (error) {
-      this.ctx.logger.warn(`dsh-custom-permission: cannot read settings descriptors: ${errorMessage(error)}`)
+      this.ctx.logger.warn(`dsh-custom-permission: cannot locate the profile config entry: ${errorMessage(error)}`)
       return undefined
     }
   }
@@ -532,7 +548,7 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
       presetsJson[name] = presetToWire(spec)
     }
     const revision = settings.describe().find(entry => entry.ns === ns)?.revision
-    await settings.update(ns, { presets: presetsJson, active }, revision)
+    await settings.replace(ns, { presets: presetsJson, active }, revision)
     // Apply the write locally until the Loader's volatile commit (or, for a
     // plain config without live references, for the rest of the process).
     this.tableOverride = table
