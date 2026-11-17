@@ -1,19 +1,41 @@
 /**
- * Plugin configuration for dsh-custom-permission: the named preset table.
- * Every preset carries the four permission knobs (allow/deny rules,
- * tool-level approval auto-grants, extra writable roots), each defaulting to
- * empty. The `default` preset is required — an absent key fails at load — and
- * may itself be empty; any preset that fails to compile fails the load,
- * never falling back to another preset.
+ * Plugin configuration for dsh-custom-permission: the named preset table plus
+ * the active preset name, both persisted as the plugin's own profile config.
+ *
+ * The two runtime-editable fields are schemastery `volatile()`: the Loader
+ * commits their new values into the running plugin's references without
+ * remounting it, and dsh-settings can write them through the active profile
+ * patch. The table is the single source of truth — the composition patch seeds
+ * it, runtime edits replace it wholesale, and a missing `default` entry fails
+ * the load (never falling back to another preset).
  * @module dsh-custom-permission/config
  */
 
 import z from '@deepseek-ai/schemastery'
 
+/**
+ * One runtime-editable config field. The Loader hands a live reference
+ * (`{ get }`) to a running plugin; plain values are accepted for direct
+ * construction in tests.
+ */
+export type MaybeVolatile<T> = T | { get(): T }
+
+/** Read one config field, whether it is a Loader volatile reference or a plain value. */
+export function readVolatile<T>(value: MaybeVolatile<T>): T {
+  return value !== null && typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function'
+    ? (value as { get(): T }).get()
+    : value as T
+}
+
 /** One string condition on one argument field; every declared key must match. */
 export interface FieldMatcher {
-  /** JavaScript regular expression the string must match (unescaped search). */
-  regex?: RegExp
+  /**
+   * JavaScript regular expression (unescaped search). Config values are
+   * JSON-shaped, so the composition and the editor supply the pattern source
+   * as a string; the policy compiles it (and rejects an invalid pattern)
+   * when the preset table is loaded.
+   */
+  regex?: string | RegExp
   /** Literal prefix the string must start with. */
   prefix?: string
   /** Glob (`*`, `**`, `?`, `[set]`, `{a,b}`) the whole string must match. */
@@ -23,13 +45,14 @@ export interface FieldMatcher {
 }
 
 /**
- * One matcher with at least one condition. `z.regExp()` rejects an invalid
- * pattern at config load, so a typo fails loud instead of silently matching
- * nothing. `z.object` fields are optional by construction.
+ * One matcher with at least one condition. The `regex` field stays a plain
+ * string in the schema because volatile config values must be JSON-shaped
+ * (a `RegExp` instance is rejected by the Loader); an invalid pattern fails
+ * loud when the preset is compiled.
  */
-export const FieldMatcher = z.transform(
+export const FieldMatcher: z<FieldMatcher> = z.transform(
   z.object({
-    regex: z.regExp(),
+    regex: z.string(),
     prefix: z.string(),
     glob: z.string(),
     contains: z.string(),
@@ -41,7 +64,7 @@ export const FieldMatcher = z.transform(
     return value
   },
   true,
-)
+) as unknown as z<FieldMatcher>
 
 /** One allow/deny rule: a tool-name pattern plus optional argument conditions. */
 export interface RuleSpec {
@@ -61,11 +84,11 @@ export interface RuleSpec {
 }
 
 /** Schema for one rule: `when` maps arbitrary field paths to matchers. */
-export const RuleSpec = z.object({
+export const RuleSpec: z<RuleSpec> = z.object({
   tool: z.string(),
   when: z.dict(FieldMatcher),
   reason: z.string(),
-})
+}) as unknown as z<RuleSpec>
 
 /** One named permission preset: the four knobs, each defaulting to empty. */
 export interface Preset {
@@ -80,12 +103,12 @@ export interface Preset {
 }
 
 /** Schema for one preset; fields are optional in input and default to empty lists. */
-export const Preset = z.object({
+export const Preset: z<Preset> = z.object({
   allowRules: z.array(RuleSpec).default([]),
   denyRules: z.array(RuleSpec).default([]),
   allowApprovals: z.array(z.string()).default([]),
   extraWritableRoots: z.array(z.string()).default([]),
-})
+}) as unknown as z<Preset>
 
 /**
  * JSON wire form of one argument-field matcher, as Remote get/create/update
@@ -125,20 +148,5 @@ export interface PresetSpecWire {
   extraWritableRoots: string[]
 }
 
-/**
- * Schema for the preset table. The `default` key is mandatory — using the
- * plugin requires an explicit default, even when it is empty — and every
- * preset's rules are validated only when compiled (see the plugin constructor).
- */
-export const PluginConfig = z.transform(
-  z.object({
-    presets: z.dict(Preset),
-  }),
-  (value) => {
-    if (value.presets?.default === undefined) {
-      throw new Error('dsh-custom-permission: presets.default is required (its four fields may be empty)')
-    }
-    return value
-  },
-  true,
-)
+/** Schema for the preset table, keyed by preset name. */
+export const Presets: z<Record<string, Preset>> = z.dict(Preset) as unknown as z<Record<string, Preset>>

@@ -11,11 +11,11 @@ DeepSeek Harness（DSH）的**外部权限插件**：以「命名预设」为单
 3. **自动放行审批工具（allowApprovals）**：名单内工具的审批请求（含文件系统的沙箱升级审批）自动通过；
 4. **额外可写路径（extraWritableRoots）**：`workspace-write` 沙箱下允许文件系统工具读写会话工作区之外的指定路径（只影响文件系统工具，不影响 shell 进程沙箱）。
 
-安装即自带一份**空的 `default`**（零拦截：无规则、无自动放行、无额外路径），保证**全新 profile 装完不写配置也能启动**；面板里的改动与切换会持久化到 `settings.yaml`（`custom-permission` 命名空间），重启后保留。
+安装即自带一份**空的 `default`**（零拦截：无规则、无自动放行、无额外路径），保证**全新 profile 装完不写配置也能启动**；面板里的改动与切换会写回插件在 profile `cordis.patch.yml` 里的 `custom-permission` 行（`presets` 与 `active` 两个可热更新字段），重启后保留。
 
 ## 安装方法
 
-前置：已安装 `dsh` CLI（建议 npm 最新发布版，本插件按其适配）。
+前置：已安装 `dsh` CLI（本版本适配 dsh `0.2.2-rc.1`，按“永远适配 npm 最新发布线”的方针随 0.2.x 发布线更新）。
 
 ```sh
 # 方式一：本地目录 / npm tarball / 已发布的包
@@ -115,7 +115,8 @@ dsh plugin --profile <name> add github:Pepper256/dsh-custom-permission
 
 ### 持久化与注意点
 
-- 未在界面改过预设时，面板显示的是配置里的预设；一旦在界面新建/编辑/删除过，整张预设表会存入 `settings.yaml`（`custom-permission` 命名空间）并以其为准（之后改配置文件不再自动合并；想回到配置文件请清掉该命名空间的 `presets`）。
+- 未在界面改过预设时，面板显示的是 composition（bundle/用户 patch）里的预设；在界面新建/编辑/删除或切换后，整张预设表与当前选择会写回该插件在 profile `cordis.patch.yml` 的 `custom-permission` 行（行 config 整行替换，所以每次写入都带完整表）。dsh 0.2.x 起不再使用旧的 `settings.yaml` 命名空间。没有 `settings` 服务的组合（raw/headless）中，切换只在进程内生效、预设编辑会报错。
 - 删除预设不能删当前激活项或最后一个；切换目标、写入的规则或名称非法时会报错并保留原状态，绝不静默回退。
 - 默认自带的 `default` 是**空预设（零拦截）**：只保证开箱可启动，不自动放行或拒绝任何调用；需要策略时按"自定义预设"写入自己的规则。
 - 提醒：「自动允许」只让命中的调用免于自身审批，**不改变 dsh 自己的沙箱/审批配置**。dsh 审批设为 read-only 时，普通写入会被沙箱围栏直接拒绝（不产生审批）；要让 agent 能写入，请把工具加入「自动放行审批」——带 `sandbox_permissions` 的升级写入审批会自动通过。
+- dsh 0.2.x 自带一套「权限预设」（`read-only` / `workspace-write` / `danger-full-access` = 沙箱模式 + 审批策略，在输入框的权限选择器里切换）；本插件的预设管的是 auto-allow/deny 规则、自动放行审批清单与额外可写路径，两者叠加生效。上一条提醒针对的是 dsh 自己的权限预设。

@@ -164,10 +164,18 @@ function compileToolPattern(pattern: string): (name: string) => boolean {
   return name => name === pattern
 }
 
-/** Compile one argument-field matcher; an invalid glob fails at load. */
+/** Compile one argument-field matcher; an invalid glob or regex fails at load. */
 function compileFieldMatcher(matcher: FieldMatcher): CompiledFieldMatcher {
+  let regex: RegExp | undefined
+  if (matcher.regex !== undefined) {
+    try {
+      regex = matcher.regex instanceof RegExp ? matcher.regex : new RegExp(matcher.regex)
+    } catch (error) {
+      throw new Error(`invalid regular expression ${JSON.stringify(matcher.regex)}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   return {
-    ...matcher.regex !== undefined ? { regex: matcher.regex } : {},
+    ...regex !== undefined ? { regex } : {},
     ...matcher.prefix !== undefined ? { prefix: matcher.prefix } : {},
     ...matcher.glob !== undefined ? { glob: globToRegExp(matcher.glob) } : {},
     ...matcher.contains !== undefined ? { contains: matcher.contains } : {},

@@ -131,5 +131,5 @@
 - **面板/按钮不见了？** 确认 profile 装着本插件并已刷新页面；插件未加载时检查启动日志（配置错误会导致加载失败并指名原因）。
 - **保存失败提示"already exists / 名称含空白 / 非法"**：见 3.1/3.2 的规则修正即可。
 - **改完想立刻看到效果？** 保存/切换即生效（进程级），对**所有会话**生效，下一条工具调用即按新规则判定。
-- **与配置文件（cordis.patch.yml）的关系**：未做过任何界面改动时，面板显示的是配置里的预设；一旦在界面里新建/编辑/删除过，预设表就持久化到 `settings.yaml`（`custom-permission` 命名空间）并由其接管，之后改配置文件不再自动合并（详见 README「预设切换与管理」）。想把界面里的改动清掉回到配置文件，删除 `settings.yaml` 中 `custom-permission` 段的 `presets`（重启后生效）。
+- **与配置文件（cordis.patch.yml）的关系**：未做过任何界面改动时，面板显示的是 composition 里的预设；在界面新建/编辑/删除或切换后，整张预设表与当前选择会写回插件在 profile `cordis.patch.yml` 的 `custom-permission` 行（`presets` + `active` 两个可热更新字段），之后以该行为准。想回到 composition 里的配置，把该行删掉或改回 composition 的 config 即可（详见 README「持久化与注意点」）。没有 `settings` 服务的组合中，切换只在进程内生效、预设编辑会报错。
 - **命令入口仍可用**：`/custom-permission presets` 查看，`/custom-permission preset <名>` 切换，与面板操作互通。

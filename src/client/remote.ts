@@ -112,9 +112,9 @@ const presetSpecWireSchema = z.object({
 })
 
 /** Strict codecs (zod), one per wire shape this namespace exchanges. */
-const listViewCodec = { mode: 'strict' as const, typeSymbol: 'dsh-custom-permission#PresetListView', schema: listViewSchema }
-const presetNameCodec = { mode: 'strict' as const, typeSymbol: 'dsh-custom-permission#PresetName', schema: z.string() }
-const presetSpecWireCodec = { mode: 'strict' as const, typeSymbol: 'dsh-custom-permission#PresetSpecWire', schema: presetSpecWireSchema }
+const listViewCodec = { mode: 'strict' as const, typeSymbol: 'dsh-custom-permission#PresetListView', create: () => listViewSchema }
+const presetNameCodec = { mode: 'strict' as const, typeSymbol: 'dsh-custom-permission#PresetName', create: () => z.string() }
+const presetSpecWireCodec = { mode: 'strict' as const, typeSymbol: 'dsh-custom-permission#PresetSpecWire', create: () => presetSpecWireSchema }
 
 /** Hand-written contribution this browser half mounts into the gateway client. */
 export const CUSTOM_PERMISSION_REMOTE: TypertRemoteContribution = {

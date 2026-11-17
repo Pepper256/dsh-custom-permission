@@ -17,6 +17,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { FsError } from '@deepseek-ai/dsh-fs'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
 import CustomPermissionFileSystem from '../src/index.ts'
@@ -31,6 +32,7 @@ let fiber: Awaited<ReturnType<Context['plugin']>>
 
 async function boot(extraRoots: string[] = [extra]): Promise<void> {
   ctx = new Context()
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: workspace })
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(Tools)
@@ -147,6 +149,7 @@ describe('mode interactions', () => {
 describe('config validation', () => {
   it('rejects a non-array extraWritableRoots at load', async () => {
     const failing = new Context()
+    await failing.plugin(SessionProjectionRegistry)
     await failing.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: workspace })
     await failing.plugin(SystemPrompt)
     await failing.plugin(Tools)
@@ -159,6 +162,7 @@ describe('config validation', () => {
 
   it('rejects a config without the required default preset', async () => {
     const failing = new Context()
+    await failing.plugin(SessionProjectionRegistry)
     await failing.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: workspace })
     await failing.plugin(SystemPrompt)
     await failing.plugin(Tools)
@@ -171,6 +175,7 @@ describe('config validation', () => {
 
   it('rejects an invalid rule regex at load, naming the failing preset', async () => {
     const failing = new Context()
+    await failing.plugin(SessionProjectionRegistry)
     await failing.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: workspace })
     await failing.plugin(SystemPrompt)
     await failing.plugin(Tools)

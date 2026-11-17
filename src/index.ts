@@ -3,29 +3,29 @@
  * filesystem backend with configurable extra writable roots, plus the
  * auto-allow / auto-deny policy over the tool pipeline and the approval seam.
  *
- * Permission settings live in a named preset table. The `default` preset is
- * required in the composition config (it may be empty) and any preset that
- * fails to compile fails the plugin load — nothing ever falls back to another
- * preset. The composition table is the SEED: while the `custom-permission`
- * settings document carries no user preset table the composition presets are
- * authoritative, and the first runtime change (Web editor or command) copies
- * the whole current table into the settings document, which becomes the
- * authoritative table from then on (later composition edits are shadowed until
- * the settings section is cleared). The active preset is a process-level
- * selection: it starts at `default`, can be switched through
- * `/custom-permission preset <name>` or the Web panel, and the selection is
- * persisted in the settings namespace (hot-reloaded, so a restart restores the
- * last selection; an invalid stored name fails the load).
+ * Permission settings are the plugin's own profile config: a named preset
+ * table plus the active preset name. Both fields are schemastery-volatile, so
+ * the Loader commits a new value into the running plugin's references without
+ * remounting it, and dsh-settings can write them through the active profile
+ * patch. The table is the single source of truth: the composition seeds it,
+ * runtime edits replace it wholesale, and a missing `default` preset, an
+ * uncompilable preset, or an unknown active name fails loud — nothing ever
+ * falls back to another preset. The active preset is a process-level
+ * selection: it starts at the configured name, can be switched through
+ * `/custom-permission preset <name>` or the Web panel, and is persisted to the
+ * profile patch when a settings service is composed (a profile without one
+ * keeps the switch process-local).
  *
  * Enforcement sites (all driven by the active preset's compiled rules):
- * - `tools/pre-execute` (prepend): deny rules short-circuit before any hook
- *   can ask; allow rules short-circuit before any hook can ask, skipping the
- *   approval round trip entirely.
+ * - `tools/pre-execute` (prepend): the dispatched call's arguments are recorded
+ *   for the approval answerer, then deny rules short-circuit before any hook
+ *   can ask and allow rules short-circuit before any hook can ask, skipping
+ *   the approval round trip entirely.
  * - `ctx.tools.guard()`: the monotonic deny backstop, evaluated after any
  *   pre-execute allow and after approval, so a deny rule is never bypassed.
  * - `approval/request` (prepend): auto-grants asks for tools listed in
- *   `allowApprovals`, and for allow rules whose command-level conditions
- *   match the ask's recovered `tool/call` arguments (sandbox escalation).
+ *   `allowApprovals`, and for allow rules whose command-level conditions match
+ *   the recorded arguments of the ask's call (sandbox escalation).
  *
  * The filesystem fence is `@deepseek-ai/dsh-fs-sandbox`'s, with one
  * difference: under `workspace-write`, a mutation is admitted when the target
@@ -61,14 +61,15 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-commands'
 import type { CommandResult } from '@deepseek-ai/dsh-commands/types'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { bindTypertRemote, Remote } from '@deepseek-ai/dsh-typert-protocol'
-import { lookupCallArguments } from './answerer.ts'
+import { createCallArgumentsCache } from './answerer.ts'
+import type { CallArgumentsCache } from './answerer.ts'
 import { applyPermissionCommand } from './command.ts'
-import { PluginConfig, Preset } from './config.ts'
+import { Preset, Presets, readVolatile } from './config.ts'
 import type {
   FieldMatcher as FieldMatcherSpec,
   FieldMatcherWire,
+  MaybeVolatile,
   Preset as PresetSpec,
   PresetSpecWire,
   RuleSpec as RuleSpecSpec,
@@ -79,27 +80,17 @@ import { EXTRA_ROOTS_CONTEXT_NAME, EXTRA_ROOTS_CONTEXT_ORDER, renderExtraRootsCo
 import { compileRules, evaluateRules } from './rules.ts'
 import type { CompiledRule } from './rules.ts'
 
-/** Brand one valid namespace string; mirrors the check the settings service applies. */
-function settingsNamespace(value: string): SettingsNamespace {
-  if (!/^[a-z][a-z0-9-]*$/.test(value)) {
-    throw new TypeError(`settings namespace "${value}" must match ^[a-z][a-z0-9-]*$`)
-  }
-  return value as SettingsNamespace
-}
-
-/** Settings namespace carrying the preset table and the active preset name. */
-export const CUSTOM_PERMISSION_SETTINGS_NAMESPACE = settingsNamespace('custom-permission')
-
 /**
- * The settings document's value shape for this plugin: the active preset name
- * plus the user-owned preset table (absent until the first runtime change —
- * the composition table is the seed, see the module doc).
+ * The dsh-settings service surface this plugin depends on. Deliberately
+ * structural: the released SettingsForms service (describe/update keyed by
+ * profile entry id) is stable across the 0.2 line, and a profile without it
+ * simply keeps the selection process-local.
  */
-interface PresetSettingsDocument {
-  /** The active preset name (user layer, switched through the UI or command). */
-  preset: string
-  /** The user-owned preset table; absent while the composition table still seeds. */
-  presets?: Record<string, PresetSpec>
+interface SettingsFormsLike {
+  /** Live configuration descriptors, one per addressable profile entry. */
+  describe(): Array<{ readonly ns: string; readonly revision: number; readonly schema: unknown }>
+  /** Merge a volatile-field patch into one profile entry's config. */
+  update(ns: string, patch: object, expectedRevision?: number): Promise<void>
 }
 
 /** The active preset's compiled enforcement state, replaced atomically on switch. */
@@ -108,6 +99,14 @@ interface CompiledPreset {
   readonly denyRules: readonly CompiledRule[]
   readonly allowApprovalsSet: ReadonlySet<string>
   readonly extraRoots: readonly string[]
+}
+
+/** The compiled table plus the resolved selection for one enforcement observation. */
+interface EnforcementState {
+  readonly table: Record<string, PresetSpec>
+  readonly name: string
+  readonly compiled: ReadonlyMap<string, CompiledPreset>
+  readonly current: CompiledPreset
 }
 
 /** Wire view of one configured preset, for the Web client's preset panel. */
@@ -127,13 +126,16 @@ export interface PresetListView {
 }
 
 /**
- * Full plugin config: the local backend's knobs plus the preset table.
- * `presets` is optional here because schemastery validates `default` and the
- * rest is read through the schema-transformed value.
+ * Full plugin config: the local backend's knobs plus the preset table and the
+ * active preset name. The two runtime-editable fields arrive as Loader
+ * volatile references inside a running plugin; plain values keep direct
+ * construction (tests) and the composition seed usable.
  */
 export interface Config extends LocalConfig {
-  /** Named preset table; `default` required, its four fields may be empty. */
-  presets?: Record<string, PresetSpec>
+  /** Named preset table; `default` required at load, its four fields may be empty. */
+  presets?: MaybeVolatile<Record<string, PresetSpec> | undefined>
+  /** Active preset name; absent means `default`. */
+  active?: MaybeVolatile<string | undefined>
 }
 
 /** Valid preset names: non-empty, no whitespace, at most 64 characters. */
@@ -188,9 +190,12 @@ function coercePresetSpec(raw: unknown): PresetSpec {
   // The schemastery schema is callable: it validates the structure, turns
   // regex sources into RegExp, defaults the four arrays, and throws on an
   // invalid regular expression — the earliest point a bad editor input fails.
+  // Volatile config values arrive deep-frozen, and schema normalization
+  // writes defaults into nested objects, so validate a mutable clone.
+  const copy = structuredClone(raw)
   // The inferred output type is inexpressible against the `Preset` interface
   // (schemastery fields are nullable), so the value is re-typed.
-  return Preset(raw as never) as unknown as PresetSpec
+  return Preset(copy as never) as unknown as PresetSpec
 }
 
 /** One matcher to its JSON wire form: regex sources, never RegExp instances. */
@@ -237,7 +242,6 @@ function describeMatcher(matcher: FieldMatcherSpec): string {
   if (matcher.contains !== undefined) parts.push(`contains "${matcher.contains}"`)
   return parts.join(' + ')
 }
-
 /** Human-readable description of one rule for the `/custom-permission` command. */
 function describeRule(spec: RuleSpecSpec, index: number): string {
   const when = spec.when === undefined
@@ -261,100 +265,176 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
   readonly typertRemote = bindTypertRemote(this, 'fs', { namespace: 'customPermission' })
 
   /**
-   * Local backend fields plus the preset table; invalid rules and a missing
-   * `default` preset fail at load. The `override` modifier is inexpressible
-   * here: tsc requires it on this static, while the vite/rolldown parser
-   * rejects the spelling, so the error is suppressed with the literal
-   * `static` form.
+   * The local backend's knobs restated as a plain object schema, so the
+   * `presets` and `active` volatile children are visible to the Loader's
+   * config diff and to dsh-settings form projection. An `intersect` schema
+   * would hide both.
    */
-  // @ts-expect-error TS4114 — static Config override; see the doc above.
-  static Config = z.intersect([LocalFileSystem.Config, PluginConfig]) as unknown as z<Config>
+  static Config = z.object({
+    ...(LocalFileSystem.Config as unknown as { dict: Record<string, z> }).dict,
+    presets: Presets.volatile(),
+    active: z.string().volatile(),
+  }) as unknown as z<Config>
 
-  /** The composition's preset table (the seed; see the module doc). */
-  private readonly configSpecs: ReadonlyMap<string, PresetSpec>
+  /** The live config references (Loader volatile fields, or plain values in tests). */
+  private readonly configRefs: { presets: MaybeVolatile<Record<string, PresetSpec> | undefined>; active: MaybeVolatile<string | undefined> }
 
-  /** The EFFECTIVE preset specs: composition presets until the first runtime change. */
-  private specs: ReadonlyMap<string, PresetSpec>
+  /** The table identity the compiled cache belongs to. */
+  private compiledTable: Record<string, PresetSpec> | undefined
 
-  /** Compiled state of every effective preset; replaced atomically on table change. */
-  private compiled: ReadonlyMap<string, CompiledPreset>
+  /** The selection the compiled cache belongs to. */
+  private compiledName: string | undefined
 
-  /** Compiled state of the active preset (the process-level selection). */
-  private current: CompiledPreset
+  /** Compiled state of every configured preset, replaced atomically on table change. */
+  private compiled: ReadonlyMap<string, CompiledPreset> | undefined
+
+  /** Compiled state of the active preset. */
+  private current: CompiledPreset | undefined
 
   /** Name of the active preset. */
-  private currentPresetName = 'default'
+  private activeName: string | undefined
 
-  /** The settings document thunk (falls back to the composition entry on detach). */
-  private settingsValue: () => PresetSettingsDocument = () => ({ preset: 'default' })
+  /** A selection applied before its persistence settles (or kept without settings). */
+  private activeOverride: string | undefined
+
+  /** A preset table applied before its persisted config reference settles. */
+  private tableOverride: Record<string, PresetSpec> | undefined
+
+  /** The raw config table the normalized table was derived from. */
+  private normalizedRaw: Record<string, PresetSpec> | undefined
+
+  /** The normalized (RegExp-bearing, defaults-filled) view of the config table. */
+  private normalizedTable: Record<string, PresetSpec> | undefined
+
+  /** The recorded arguments of recently dispatched tool calls, for approval asks. */
+  private readonly calls: CallArgumentsCache = createCallArgumentsCache()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, config)
-    const configSpecs = new Map(Object.entries(config.presets ?? {}))
-    this.configSpecs = configSpecs
+    if (config.presets === undefined) {
+      throw new Error('dsh-custom-permission: config.presets is required (its four fields may be empty)')
+    }
+    this.configRefs = {
+      presets: config.presets,
+      active: config.active ?? undefined,
+    }
+    // Fail loud at load: invalid presets, a missing `default`, or an unknown
+    // configured selection never fall back to another preset.
+    this.state()
+  }
+
+  /** The configured preset table, read fresh from the volatile config reference. */
+  private configTable(): Record<string, PresetSpec> {
+    const table = readVolatile(this.configRefs.presets)
+    if (table === undefined || table === null) {
+      throw new Error('dsh-custom-permission: config.presets is required (its four fields may be empty)')
+    }
+    return table
+  }
+
+  /** The configured active preset name, read fresh from the volatile config reference. */
+  private configActiveName(): string {
+    return readVolatile(this.configRefs.active) ?? 'default'
+  }
+
+  /** The selection currently in force: a pending switch, else the configured name. */
+  private selection(): string {
+    return this.activeOverride ?? this.configActiveName()
+  }
+
+  /** Whether two preset tables carry the same JSON wire content (regexes as sources). */
+  private sameTable(left: Record<string, PresetSpec>, right: Record<string, PresetSpec>): boolean {
+    const wire = (table: Record<string, PresetSpec>): string =>
+      JSON.stringify(Object.keys(table).sort().map(name => [name, presetToWire(table[name]!)]))
+    return wire(left) === wire(right)
+  }
+
+  /**
+   * Drop a pending override once the config references reflect it: the Loader
+   * commits a volatile write into the running references, while a plain test
+   * config never changes and keeps the override in force.
+   */
+  private syncOverrides(): void {
+    if (this.activeOverride !== undefined && this.configActiveName() === this.activeOverride) {
+      this.activeOverride = undefined
+    }
+    if (this.tableOverride !== undefined) {
+      try {
+        if (this.sameTable(this.configTable(), this.tableOverride)) this.tableOverride = undefined
+      } catch {
+        // An unreadable config table keeps the applied override in force.
+      }
+    }
+  }
+
+  /**
+   * Compile every preset of a table atomically; an invalid preset (or a table
+   * without `default`) throws, nothing is replaced.
+   * @param table - the preset table in declaration order.
+   * @returns compiled state per preset.
+   */
+  private compileTable(table: Record<string, PresetSpec>): ReadonlyMap<string, CompiledPreset> {
+    if (!Object.hasOwn(table, 'default')) {
+      throw new Error('dsh-custom-permission: presets.default is required (its four fields may be empty)')
+    }
     const compiled = new Map<string, CompiledPreset>()
-    for (const [name, spec] of configSpecs) {
+    for (const [name, spec] of Object.entries(table)) {
       try {
         compiled.set(name, compilePreset(spec, this.config.cwd))
       } catch (error) {
         throw new Error(`dsh-custom-permission: preset "${name}" is invalid: ${errorMessage(error)}`)
       }
     }
-    this.specs = configSpecs
-    this.compiled = compiled
-    // The schema guarantees `presets.default`; this narrows the optional type.
-    this.current = compiled.get('default') ?? compilePreset({}, this.config.cwd)
-
-    // Persist the table and the selection in the `custom-permission` settings
-    // namespace. The composition preset table is the seed while the document
-    // carries none; once a runtime change stores one, it is authoritative. An
-    // invalid stored table (uncompilable preset, unknown active name) throws
-    // from the attach-time `onChange` and therefore fails the plugin load,
-    // never silently falling back to `default`. Without a settings service
-    // the table and the selection stay process-local.
-    const settingsSchema = z.object({
-      preset: z.string().required(),
-      presets: z.dict(Preset),
-    }) as unknown as z<PresetSettingsDocument>
-    this.attachSettingsSection(ctx, settingsSchema)
+    return compiled
   }
 
   /**
-   * Wire the `custom-permission` settings namespace without depending on the
-   * `installSettingsSection` convenience export, which released dsh-settings
-   * versions differ on. Uses only the stable `register`/`watch` surface both
-   * the installed closure and the master source share: while a settings
-   * service exists the namespace is registered with the composition entry as
-   * its base layer; committed changes and attach re-derive the table through
-   * `onChange`, and service teardown falls back to the process-local
-   * composition entry without touching the fiber mid-unload.
+   * Normalize the raw config table into the typed form the policy consumes.
+   * Volatile config values are JSON-shaped, so regex matchers arrive as
+   * sources; the schema turns them into RegExp and fills the four field
+   * defaults, and an invalid entry fails loud with its preset name.
+   * @param raw - the raw config table.
+   * @returns the typed table.
    */
-  private attachSettingsSection(ctx: Context, settingsSchema: z<PresetSettingsDocument>): void {
-    ctx.inject(['settings'], (sctx) => {
-      const settings = sctx.settings as {
-        register<T>(
-          ns: SettingsNamespace,
-          schema: z<T>,
-          options?: { base?: Partial<T> },
-        ): { get(): T; watch(callback: () => void): () => void }
+  private normalizeTable(raw: Record<string, PresetSpec>): Record<string, PresetSpec> {
+    const normalized: Record<string, PresetSpec> = {}
+    for (const [name, spec] of Object.entries(raw)) {
+      try {
+        normalized[name] = coercePresetSpec(spec)
+      } catch (error) {
+        throw new Error(`dsh-custom-permission: preset "${name}" is invalid: ${errorMessage(error)}`)
       }
-      const scope = settings.register<PresetSettingsDocument>(
-        CUSTOM_PERMISSION_SETTINGS_NAMESPACE,
-        settingsSchema,
-        { base: { preset: 'default' } },
-      )
-      let active = true
-      this.settingsValue = () => scope.get()
-      const onChange = (): void => {
-        if (active) this.syncFromSettings(scope.get())
+    }
+    return normalized
+  }
+
+  /**
+   * Resolve the current enforcement state: compile on table/selection change,
+   * otherwise reuse the compiled cache. An unknown selection fails loud.
+   * @returns the table, selection, compiled table, and active compiled preset.
+   */
+  private state(): EnforcementState {
+    this.syncOverrides()
+    const raw = this.tableOverride ?? this.configTable()
+    const name = this.selection()
+    if (this.normalizedRaw !== raw || this.normalizedTable === undefined) {
+      this.normalizedTable = this.normalizeTable(raw)
+      this.normalizedRaw = raw
+    }
+    const table = this.normalizedTable
+    if (this.compiledTable !== raw || this.compiledName !== name || this.compiled === undefined || this.current === undefined || this.activeName === undefined) {
+      const compiled = this.compileTable(table)
+      const current = compiled.get(name)
+      if (current === undefined) {
+        throw new Error(`dsh-custom-permission: preset "${name}" is not configured; available: ${[...compiled.keys()].join(', ')}`)
       }
-      onChange()
-      scope.watch(() => onChange())
-      sctx.effect(() => () => {
-        active = false
-        this.settingsValue = () => ({ preset: 'default' })
-      })
-    })
+      this.compiledTable = raw
+      this.compiledName = name
+      this.compiled = compiled
+      this.current = current
+      this.activeName = name
+    }
+    return { table, name: this.activeName, compiled: this.compiled, current: this.current }
   }
 
   /** The deployment default mode — the capability fact the tool layer reads to advertise escalation. */
@@ -364,13 +444,16 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
 
   /** Register the policy listeners, the guard, the context contribution, and the command. */
   [Service.init](): void {
-    // Allow/deny short-circuits before hooks and asks. Deny is checked first
-    // so a call matching both tables fails closed.
+    // Record every dispatched call's arguments first: the approval answerer
+    // recovers command-level asks by call id, and this stage runs immediately
+    // before the tool body that can ask.
     this.ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
-      const { denyRules, allowRules } = this.current
-      const deny = evaluateRules(denyRules, exec.name, exec.arguments)
+      this.calls.remember(String(exec.callId), exec.arguments)
+      const { current } = this.state()
+      // Deny is checked first so a call matching both tables fails closed.
+      const deny = evaluateRules(current.denyRules, exec.name, exec.arguments)
       if (deny) return { kind: 'deny', reason: deny.denyReason }
-      const allow = evaluateRules(allowRules, exec.name, exec.arguments)
+      const allow = evaluateRules(current.allowRules, exec.name, exec.arguments)
       if (allow) return { kind: 'allow' }
       return next()
     }, { prepend: true })
@@ -378,17 +461,17 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
     // Monotonic deny backstop: evaluated after any allow and after approval,
     // so a deny rule is never bypassed by another listener or an answerer.
     this.ctx.tools.guard(exec => {
-      const deny = evaluateRules(this.current.denyRules, exec.name, exec.arguments)
+      const deny = evaluateRules(this.state().current.denyRules, exec.name, exec.arguments)
       return deny ? deny.denyReason : undefined
     })
 
     // Approval answerer: tool-level auto-grants, then command-level allow
-    // rules against the ask's recovered tool/call arguments.
+    // rules against the recorded arguments of the ask's call.
     this.ctx.on('approval/request', async (req, next): Promise<ApprovalOutcome> => {
-      const { allowApprovalsSet, allowRules } = this.current
-      if (allowApprovalsSet.has(req.toolName)) return 'allowed-once'
-      const args = lookupCallArguments(req.agent, req.callId)
-      if (args !== undefined && evaluateRules(allowRules, req.toolName, args) !== undefined) {
+      const { current } = this.state()
+      if (current.allowApprovalsSet.has(req.toolName)) return 'allowed-once'
+      const args = req.callId === undefined ? undefined : this.calls.lookup(String(req.callId))
+      if (args !== undefined && evaluateRules(current.allowRules, req.toolName, args) !== undefined) {
         return 'allowed-once'
       }
       return next()
@@ -397,115 +480,120 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
     this.ctx.systemPrompt.context({
       name: EXTRA_ROOTS_CONTEXT_NAME,
       order: EXTRA_ROOTS_CONTEXT_ORDER,
-      text: () => renderExtraRootsContext(this.current.extraRoots),
+      text: () => renderExtraRootsContext(this.state().current.extraRoots),
     })
 
     applyPermissionCommand(this.ctx, rawInput => this.handleCommand(rawInput))
   }
 
   /**
-   * Re-derive the effective table from the resolved settings document. The
-   * stored user table wins when the document carries one (even a single-entry
-   * one); otherwise the composition table is the seed. An uncompilable preset
-   * throws — at attach this fails the plugin load, on later document edits
-   * the settings service contains the failure and keeps the last good value.
+   * Locate this plugin's profile entry in the settings service. The entry's
+   * schema is this class's static Config (the Loader records it on the fiber),
+   * so the address is discovered rather than hardcoded, and a renamed profile
+   * row keeps working.
+   * @param settings - the composed settings service.
+   * @returns the profile entry id, or undefined when the entry is not configurable here.
    */
-  private syncFromSettings(value: PresetSettingsDocument): void {
-    const user = value.presets
-    const specs = user !== undefined && Object.keys(user).length > 0
-      ? new Map(Object.entries(user))
-      : this.configSpecs
-    this.commitTable(specs)
-    this.applyPreset(value.preset)
-  }
-
-  /** Compile every preset of a table atomically; an invalid preset throws, nothing is replaced. */
-  private commitTable(specs: ReadonlyMap<string, PresetSpec>): void {
-    const compiled = new Map<string, CompiledPreset>()
-    for (const [name, spec] of specs) {
-      try {
-        compiled.set(name, compilePreset(spec, this.config.cwd))
-      } catch (error) {
-        throw new Error(`dsh-custom-permission: preset "${name}" is invalid: ${errorMessage(error)}`)
-      }
-    }
-    this.specs = specs
-    this.compiled = compiled
-  }
-
-  /** Replace the active preset atomically; unknown names fail loud, never falling back. */
-  private applyPreset(name: string): void {
-    const compiled = this.compiled.get(name)
-    if (compiled === undefined) {
-      throw new Error(`dsh-custom-permission: preset "${name}" is not configured; available: ${[...this.compiled.keys()].join(', ')}`)
-    }
-    this.current = compiled
-    this.currentPresetName = name
-  }
-
-  /** Switch the process-level selection; persists through settings when available. */
-  private switchPreset(name: string): void {
-    if (!this.specs.has(name)) {
-      throw new Error(`dsh-custom-permission: unknown preset "${name}"; available: ${[...this.specs.keys()].join(', ')}`)
-    }
-    const settings = this.ctx.get('settings') as
-      | { update(namespace: string, patch: Record<string, unknown>): Promise<void> }
-      | undefined
-    if (settings !== undefined) {
-      // Apply synchronously so the next call is judged under the new preset;
-      // the settings write follows and its watcher re-applies idempotently.
-      this.applyPreset(name)
-      void settings.update(CUSTOM_PERMISSION_SETTINGS_NAMESPACE, { preset: name }).then(
-        () => this.applyPreset(name),
-        (error: unknown) => {
-          this.ctx.logger.warn(`dsh-custom-permission: failed to persist preset selection: ${errorMessage(error)}`)
-        },
-      )
-    } else {
-      this.applyPreset(name)
+  private settingsNamespace(settings: SettingsFormsLike): string | undefined {
+    try {
+      const descriptor = settings.describe().find(entry => entry.schema === CustomPermissionFileSystem.Config)
+      return descriptor?.ns
+    } catch (error) {
+      this.ctx.logger.warn(`dsh-custom-permission: cannot read settings descriptors: ${errorMessage(error)}`)
+      return undefined
     }
   }
 
   /**
-   * Persist a whole next preset table plus the active name, then commit it
-   * atomically. The section is REPLACED wholesale (not merged): `update`'s
-   * recursive merge could never express deletion or rename, so a removed
-   * composition preset would resurrect on every boot. This plugin owns the
-   * whole `custom-permission` section (`preset` + `presets`), so replace is
-   * lossless.
-   * @param nextSpecs - the complete next table (already validated).
-   * @param active - the preset to activate.
+   * Persist the whole preset table plus the active name into this plugin's
+   * profile entry. The row config is replaced wholesale (the same layering the
+   * composition patch uses), so every write restates the complete table — a
+   * removal can never resurrect. Writes go through the settings service's
+   * volatile-field form, which persists to the active profile patch and lets
+   * the Loader commit the new references without remounting the plugin.
+   * @param table - the complete next table.
+   * @param active - the preset to select.
+   * @param required - whether a missing settings service/entry is an error.
+   * @returns whether the write reached the settings service.
    */
-  private async persistTable(nextSpecs: ReadonlyMap<string, PresetSpec>, active: string): Promise<void> {
-    const settings = this.ctx.get('settings') as
-      | { replace(namespace: string, section: Record<string, unknown>): Promise<void> }
-      | undefined
+  private async persist(table: Record<string, PresetSpec>, active: string, required: boolean): Promise<boolean> {
+    const settings = this.ctx.get('settings') as SettingsFormsLike | undefined
     if (settings === undefined) {
-      throw new Error('dsh-custom-permission: preset changes need a settings service; add @deepseek-ai/dsh-settings-file to the profile')
+      if (!required) return false
+      throw new Error('dsh-custom-permission: preset changes need the settings service; add @deepseek-ai/dsh-settings to the profile')
+    }
+    const ns = this.settingsNamespace(settings)
+    if (ns === undefined) {
+      if (!required) return false
+      throw new Error('dsh-custom-permission: cannot locate this plugin\'s profile config entry; preset changes need a writable profile patch')
     }
     const presetsJson: Record<string, PresetSpecWire> = {}
-    for (const [name, spec] of nextSpecs) {
+    for (const [name, spec] of Object.entries(table)) {
       presetsJson[name] = presetToWire(spec)
     }
-    await settings.replace(CUSTOM_PERMISSION_SETTINGS_NAMESPACE, { preset: active, presets: presetsJson })
-    this.commitTable(nextSpecs)
-    this.applyPreset(active)
+    const revision = settings.describe().find(entry => entry.ns === ns)?.revision
+    await settings.update(ns, { presets: presetsJson, active }, revision)
+    // Apply the write locally until the Loader's volatile commit (or, for a
+    // plain config without live references, for the rest of the process).
+    this.tableOverride = table
+    this.activeOverride = active
+    return true
   }
 
   /** Build the wire view of every effective preset, for the Web client panel. */
   private presetListView(): PresetListView {
+    const { table, name, compiled } = this.state()
     const entries: PresetViewEntry[] = []
-    for (const [name, spec] of this.specs) {
+    for (const [presetName, spec] of Object.entries(table)) {
       entries.push({
-        name,
-        active: name === this.currentPresetName,
+        name: presetName,
+        active: presetName === name,
         allowRules: (spec.allowRules ?? []).map((rule, index) => describeRule(rule, index)),
         denyRules: (spec.denyRules ?? []).map((rule, index) => describeRule(rule, index)),
         allowApprovals: spec.allowApprovals ?? [],
-        extraWritableRoots: this.compiled.get(name)?.extraRoots ?? [],
+        extraWritableRoots: compiled.get(presetName)?.extraRoots ?? [],
       })
     }
-    return { active: this.currentPresetName, presets: entries }
+    return { active: name, presets: entries }
+  }
+
+  /**
+   * Switch the process-level selection. The override applies immediately; a
+   * composed settings service persists it to the profile patch, otherwise the
+   * switch stays process-local.
+   * @param name - the preset to activate.
+   * @throws when the preset is unknown — the client surfaces it as an error.
+   */
+  private async switchPreset(name: string): Promise<void> {
+    const { table } = this.state()
+    if (!Object.hasOwn(table, name)) {
+      throw new Error(`dsh-custom-permission: unknown preset "${name}"; available: ${Object.keys(table).join(', ')}`)
+    }
+    this.activeOverride = name
+    try {
+      await this.persist(table, name, false)
+    } catch (error) {
+      this.activeOverride = undefined
+      throw error
+    }
+  }
+
+  /**
+   * Switch the selection for a synchronous command handler: the override
+   * applies before the (async) persistence settles, so the next call is judged
+   * under the new preset.
+   * @param name - the preset to activate.
+   */
+  private switchPresetForCommand(name: string): void {
+    const { table } = this.state()
+    this.activeOverride = name
+    void this.persist(table, name, false).then(
+      () => undefined,
+      (error: unknown) => {
+        this.activeOverride = undefined
+        this.ctx.logger.warn(`dsh-custom-permission: failed to persist preset selection: ${errorMessage(error)}`)
+      },
+    )
   }
 
   /**
@@ -525,8 +613,8 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
    * @throws when the preset is unknown — the client surfaces it as an error.
    */
   @Remote('switch')
-  switchPresetRemote(name: string): PresetListView {
-    this.switchPreset(name)
+  async switchPresetRemote(name: string): Promise<PresetListView> {
+    await this.switchPreset(name)
     return this.presetListView()
   }
 
@@ -538,9 +626,10 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
    */
   @Remote('get')
   getPresetRemote(name: string): PresetSpecWire {
-    const spec = this.specs.get(name)
+    const { table } = this.state()
+    const spec = table[name]
     if (spec === undefined) {
-      throw new Error(`dsh-custom-permission: unknown preset "${name}"; available: ${[...this.specs.keys()].join(', ')}`)
+      throw new Error(`dsh-custom-permission: unknown preset "${name}"; available: ${Object.keys(table).join(', ')}`)
     }
     return presetToWire(spec)
   }
@@ -554,17 +643,16 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
    */
   @Remote('create')
   async createPresetRemote(name: string, spec: unknown): Promise<PresetListView> {
-    const taken = new Set(this.specs.keys())
-    const target = validatePresetName(name, taken)
+    const { table } = this.state()
+    const target = validatePresetName(name, new Set(Object.keys(table)))
     const typed = coercePresetSpec(spec)
     try {
       compilePreset(typed, this.config.cwd)
     } catch (error) {
       throw new Error(`preset spec for "${target}" is invalid: ${errorMessage(error)}`)
     }
-    const next = new Map(this.specs)
-    next.set(target, typed)
-    await this.persistTable(next, target)
+    const next = { ...table, [target]: typed }
+    await this.persist(next, target, true)
     return this.presetListView()
   }
 
@@ -580,24 +668,24 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
    */
   @Remote('update')
   async updatePresetRemote(name: string, spec: unknown, renameTo: string): Promise<PresetListView> {
-    if (!this.specs.has(name)) {
-      throw new Error(`dsh-custom-permission: unknown preset "${name}"; available: ${[...this.specs.keys()].join(', ')}`)
+    const { table, name: activeName } = this.state()
+    if (!Object.hasOwn(table, name)) {
+      throw new Error(`dsh-custom-permission: unknown preset "${name}"; available: ${Object.keys(table).join(', ')}`)
     }
-    const taken = new Set(this.specs.keys())
-    const target = validatePresetName(renameTo, taken, name)
+    const target = validatePresetName(renameTo, new Set(Object.keys(table)), name)
     const typed = coercePresetSpec(spec)
     try {
       compilePreset(typed, this.config.cwd)
     } catch (error) {
       throw new Error(`preset spec for "${target}" is invalid: ${errorMessage(error)}`)
     }
-    const next = new Map<string, PresetSpec>()
-    for (const [existing, existingSpec] of this.specs) {
-      next.set(existing === name ? target : existing, existingSpec)
+    const next: Record<string, PresetSpec> = {}
+    for (const [existing, existingSpec] of Object.entries(table)) {
+      next[existing === name ? target : existing] = existingSpec
     }
-    next.set(target, typed)
-    const active = this.currentPresetName === name ? target : this.currentPresetName
-    await this.persistTable(next, active)
+    next[target] = typed
+    const active = activeName === name ? target : activeName
+    await this.persist(next, active, true)
     return this.presetListView()
   }
 
@@ -610,18 +698,22 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
    */
   @Remote('delete')
   async deletePresetRemote(name: string): Promise<PresetListView> {
-    if (!this.specs.has(name)) {
-      throw new Error(`dsh-custom-permission: unknown preset "${name}"; available: ${[...this.specs.keys()].join(', ')}`)
+    const { table, name: activeName } = this.state()
+    if (!Object.hasOwn(table, name)) {
+      throw new Error(`dsh-custom-permission: unknown preset "${name}"; available: ${Object.keys(table).join(', ')}`)
     }
-    if (this.currentPresetName === name) {
+    if (activeName === name) {
       throw new Error(`cannot delete the active preset "${name}"; switch to another preset first`)
     }
-    if (this.specs.size <= 1) {
+    const names = Object.keys(table)
+    if (names.length <= 1) {
       throw new Error('cannot delete the last preset')
     }
-    const next = new Map(this.specs)
-    next.delete(name)
-    await this.persistTable(next, this.currentPresetName)
+    const next: Record<string, PresetSpec> = {}
+    for (const [existing, spec] of Object.entries(table)) {
+      if (existing !== name) next[existing] = spec
+    }
+    await this.persist(next, activeName, true)
     return this.presetListView()
   }
 
@@ -634,10 +726,11 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
       return { kind: 'success', text: this.listPresets() }
     }
     if (verb === 'preset' && name !== undefined) {
-      if (!this.specs.has(name)) {
-        return { kind: 'error', text: `unknown preset "${name}"; available: ${[...this.specs.keys()].join(', ')}` }
+      const { table } = this.state()
+      if (!Object.hasOwn(table, name)) {
+        return { kind: 'error', text: `unknown preset "${name}"; available: ${Object.keys(table).join(', ')}` }
       }
-      this.switchPreset(name)
+      this.switchPresetForCommand(name)
       return { kind: 'success', text: `switched to preset "${name}"` }
     }
     return { kind: 'error', text: 'usage: /custom-permission [preset <name> | presets]' }
@@ -645,24 +738,26 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
 
   /** The preset names and the active one, for `/custom-permission presets`. */
   private listPresets(): string {
-    const names = [...this.specs.keys()]
-    const marker = (name: string): string => name === this.currentPresetName ? `${name} (active)` : name
-    return `available presets: ${names.map(marker).join(', ')}`
+    const { table, name } = this.state()
+    const marker = (presetName: string): string => presetName === name ? `${presetName} (active)` : presetName
+    return `available presets: ${Object.keys(table).map(marker).join(', ')}`
   }
 
   /** Read-only summary of the active preset, rendered by the `/custom-permission` command. */
   private summarize(): string {
-    const lines = [`dsh-custom-permission: active preset "${this.currentPresetName}"`, this.listPresets()]
-    const spec = this.specs.get(this.currentPresetName)
+    const { table, name } = this.state()
+    const spec = table[name]
+    const lines = [`dsh-custom-permission: active preset "${name}"`, this.listPresets()]
     const allowRules = spec?.allowRules ?? []
     const denyRules = spec?.denyRules ?? []
     const allowApprovals = spec?.allowApprovals ?? []
+    const { current } = this.state()
     lines.push('', 'allow rules:')
     lines.push(...(allowRules.length === 0 ? ['  (none)'] : allowRules.map((rule, index) => '  ' + describeRule(rule, index))))
     lines.push('', 'deny rules:')
     lines.push(...(denyRules.length === 0 ? ['  (none)'] : denyRules.map((rule, index) => '  ' + describeRule(rule, index))))
     lines.push('', `auto-allowed approval tools: ${allowApprovals.length === 0 ? '(none)' : allowApprovals.join(', ')}`)
-    lines.push('', `extra writable roots: ${this.current.extraRoots.length === 0 ? '(none)' : this.current.extraRoots.map(root => `"${root}"`).join(', ')}`)
+    lines.push('', `extra writable roots: ${current.extraRoots.length === 0 ? '(none)' : current.extraRoots.map(root => `"${root}"`).join(', ')}`)
     return lines.join('\n')
   }
 
@@ -723,7 +818,7 @@ export class CustomPermissionFileSystem extends LocalFileSystem {
       }
     }
     if (!contained) {
-      for (const root of this.current.extraRoots) {
+      for (const root of this.state().current.extraRoots) {
         if (await isPathUnder(fresh.targetKey, root)) {
           contained = true
           break
